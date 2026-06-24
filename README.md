@@ -87,12 +87,76 @@ git clone https://github.com/digininja/DVWA /tmp/DVWA
 | `--offline` | Exercise the full pipeline without calling any model. |
 | `-v, --verbose` | Log each agent as it launches, recon, and votes. |
 
-### Auth
+### Authentication — run via API key *or* subscription
 
-- **API key** — export the provider's key (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
-  `GEMINI_API_KEY`, `XAI_API_KEY`, `NVIDIA_NIM_API_KEY`, …). See `.env.example`.
-- **Subscription** — `--subscription` drives your local `claude` / `codex` /
-  `gemini` / `grok` login. No API key needed.
+You can run NeuroSploit two ways. They're independent: pick per run.
+
+#### 1) Via API (provider API key)
+
+Export the key(s) for the providers in your model panel, then run **without**
+`--subscription`. Any OpenAI-compatible provider works.
+
+```bash
+# pick one or more, depending on the models you select
+export ANTHROPIC_API_KEY=sk-ant-...        # anthropic:claude-*
+export OPENAI_API_KEY=sk-...               # openai:gpt-*
+export GEMINI_API_KEY=AIza...              # gemini:gemini-*
+export XAI_API_KEY=xai-...                 # xai:grok-*
+export NVIDIA_NIM_API_KEY=nvapi-...        # nvidia_nim:*
+export DEEPSEEK_API_KEY=...                # deepseek:*
+export MISTRAL_API_KEY=...                 # mistral:*
+export DASHSCOPE_API_KEY=...               # qwen:*  (Alibaba DashScope)
+export GROQ_API_KEY=...                    # groq:*
+export TOGETHER_API_KEY=...                # together:*
+export OPENROUTER_API_KEY=...              # openrouter:*
+# ollama needs no key (local)
+
+# then run via API (note: NO --subscription)
+./target/release/neurosploit run http://testphp.vulnweb.com/ \
+    --model anthropic:claude-opus-4-8 --vote-n 3 -v
+
+# multi-provider voting panel via API (1st finds, the others adjudicate)
+./target/release/neurosploit run http://testphp.vulnweb.com/ \
+    --model anthropic:claude-opus-4-8 --model openai:gpt-5.1 --model gemini:gemini-2.5-pro
+```
+
+Or put the keys in a `.env` and source it (`cp .env.example .env`; edit; `set -a; . ./.env; set +a`).
+
+**Provider → env var → endpoint** (all OpenAI-compatible):
+
+| `--model` prefix | Env var | Base URL |
+|------------------|---------|----------|
+| `anthropic:` | `ANTHROPIC_API_KEY` | api.anthropic.com |
+| `openai:` | `OPENAI_API_KEY` | api.openai.com |
+| `gemini:` | `GEMINI_API_KEY` | generativelanguage.googleapis.com |
+| `xai:` | `XAI_API_KEY` | api.x.ai |
+| `nvidia_nim:` | `NVIDIA_NIM_API_KEY` | integrate.api.nvidia.com |
+| `deepseek:` | `DEEPSEEK_API_KEY` | api.deepseek.com |
+| `mistral:` | `MISTRAL_API_KEY` | api.mistral.ai |
+| `qwen:` | `DASHSCOPE_API_KEY` | dashscope-intl.aliyuncs.com |
+| `groq:` | `GROQ_API_KEY` | api.groq.com |
+| `together:` | `TOGETHER_API_KEY` | api.together.xyz |
+| `openrouter:` | `OPENROUTER_API_KEY` | openrouter.ai |
+| `ollama:` | _(none)_ | localhost:11434 |
+
+Run `./target/release/neurosploit models` for the full provider/model list.
+
+#### 2) Via subscription (no API key)
+
+`--subscription` drives your local agentic-CLI login instead of an API key —
+install and log into one of the CLIs first:
+
+| `--model` prefix | CLI used | Login |
+|------------------|----------|-------|
+| `anthropic:` | `claude` (Claude Code) | `claude` then `/login` |
+| `openai:` | `codex` | `codex` login |
+| `gemini:` | `gemini` | `gemini` login |
+| `xai:` | `grok` | `grok` login |
+
+```bash
+./target/release/neurosploit run http://testphp.vulnweb.com/ \
+    --subscription --model anthropic:claude-opus-4-8 --mcp -v
+```
 
 ---
 
