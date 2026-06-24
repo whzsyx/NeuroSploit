@@ -21,5 +21,5 @@ pub use models::{
 };
 pub use pipeline::{run_whitebox, RunOutput};
 pub use pipeline::run;
-pub use pool::ModelPool;
+pub use pool::{ModelPool, Task};
 pub use types::{Finding, RunConfig};

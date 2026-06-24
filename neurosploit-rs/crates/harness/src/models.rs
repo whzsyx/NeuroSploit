@@ -265,17 +265,31 @@ pub fn ensure_playwright_mcp() -> Result<()> {
     }
 }
 
-/// Write a Playwright `.mcp.json` into `dir` and return its path, so the agentic
-/// CLI can drive a real browser (DOM/JS/network/screenshots) during execution.
-pub fn write_mcp_config(dir: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+/// Write an `.mcp.json` into `dir` (Playwright by default) and return its path,
+/// so the agentic CLI can drive a real browser during execution. If
+/// `extra_servers` points at a JSON file shaped like `{ "mcpServers": {...} }`
+/// (or just `{...}` of servers), those servers are MERGED in — letting users
+/// plug additional MCP tools into the pipeline to potentiate testing.
+pub fn write_mcp_config(dir: &std::path::Path, extra_servers: Option<&std::path::Path>) -> std::io::Result<std::path::PathBuf> {
     std::fs::create_dir_all(dir)?;
+    let mut servers = serde_json::json!({
+        "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@latest", "--headless", "--isolated"] }
+    });
+    if let Some(extra) = extra_servers {
+        if let Ok(txt) = std::fs::read_to_string(extra) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
+                let add = v.get("mcpServers").cloned().unwrap_or(v);
+                if let (Some(dst), Some(src)) = (servers.as_object_mut(), add.as_object()) {
+                    for (k, val) in src {
+                        dst.insert(k.clone(), val.clone());
+                    }
+                }
+            }
+        }
+    }
+    let cfg = serde_json::json!({ "mcpServers": servers });
     let path = dir.join(".mcp.json");
-    let cfg = r#"{
-  "mcpServers": {
-    "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp@latest", "--headless", "--isolated"] }
-  }
-}"#;
-    std::fs::write(&path, cfg)?;
+    std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap_or_default())?;
     Ok(path)
 }
 

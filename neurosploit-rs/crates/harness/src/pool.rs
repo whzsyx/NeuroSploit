@@ -3,6 +3,22 @@ use anyhow::{anyhow, Result};
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+/// Task type used by the model router to pick the best model for the step.
+#[derive(Clone, Copy, Debug)]
+pub enum Task {
+    Recon,
+    Select,
+    Exploit,
+    Validate,
+    Default,
+}
+
+/// Heuristic: is this a fast/cheap model id (good for recon/triage)?
+fn is_fast(model: &str) -> bool {
+    let m = model.to_lowercase();
+    ["haiku", "flash", "fast", "mini", "lite", "chat", "small"].iter().any(|k| m.contains(k))
+}
+
 /// A pool of candidate models with a global concurrency cap and provider
 /// failover. The same panel of models is reused for validator voting.
 ///
@@ -73,15 +89,42 @@ impl ModelPool {
     /// Complete a prompt, trying each candidate model until one succeeds.
     /// Returns the model that answered and its text.
     pub async fn complete(&self, system: &str, user: &str) -> Result<(ModelRef, String)> {
+        self.complete_routed(Task::Default, system, user).await
+    }
+
+    /// Router-aware completion: reorder the candidate panel by task before the
+    /// failover loop. Recon/triage prefer a fast/cheap model to save tokens and
+    /// latency; exploitation prefers the strongest (primary) model.
+    pub async fn complete_routed(&self, task: Task, system: &str, user: &str) -> Result<(ModelRef, String)> {
         let _permit = self.sem.acquire().await.expect("semaphore closed");
+        let order = self.route(task);
         let mut last = anyhow!("no candidate models");
-        for m in &self.candidates {
+        for m in &order {
             match self.one(m, system, user).await {
                 Ok(text) => return Ok((m.clone(), text)),
                 Err(e) => last = e,
             }
         }
         Err(last)
+    }
+
+    /// Reorder candidates for a task. With a single-model panel this is a no-op.
+    pub fn route(&self, task: Task) -> Vec<ModelRef> {
+        let mut order = self.candidates.clone();
+        if order.len() < 2 {
+            return order;
+        }
+        match task {
+            // Prefer a fast/cheap model for recon & selection.
+            Task::Recon | Task::Select => {
+                order.sort_by_key(|m| !is_fast(&m.model)); // fast first
+            }
+            // Strongest (panel order = primary first) for exploitation.
+            Task::Exploit | Task::Default => {}
+            // Validation handled by vote() rotation (different model than finder).
+            Task::Validate => {}
+        }
+        order
     }
 
     /// Ask up to `n` distinct models the same yes/no validation question and

@@ -171,7 +171,7 @@ async fn run_engagement(base: &Path, mut cfg: RunConfig, mcp: bool, whitebox: bo
     cfg.rl_path = Some(base.join("data").join("rl_state_rs.json").display().to_string());
     write_status(&workdir, "running", &format!("\"target\":{:?}", cfg.target));
 
-    println!("  ┌─ NeuroSploit v3.4.1");
+    println!("  ┌─ NeuroSploit v3.4.1  ·  by Joas A Santos & Red Team Leaders");
     println!("  │  run id : {run_id}");
     println!("  │  target : {}", cfg.target);
     println!("  │  models : {}", cfg.models.join(", "));
@@ -186,13 +186,19 @@ async fn run_engagement(base: &Path, mut cfg: RunConfig, mcp: bool, whitebox: bo
         let providers: Vec<String> = cfg.models.iter().map(|m| ModelRef::parse(m).provider).collect();
         if providers.iter().any(|p| harness::mcp_supported(p)) {
             match harness::ensure_playwright_mcp() {
-                Ok(()) => match harness::write_mcp_config(&workdir) {
+                Ok(()) => {
+                    // Optional user-supplied extra MCP servers merged into the pipeline.
+                    let extra = base.join("mcp.servers.json");
+                    let extra_ref = if extra.is_file() { Some(extra.as_path()) } else { None };
+                    match harness::write_mcp_config(&workdir, extra_ref) {
                     Ok(p) => {
+                        if extra_ref.is_some() { println!("  [*] merged extra MCP servers from mcp.servers.json"); }
                         println!("  [*] Playwright MCP ready → {}", p.display());
                         Some(p.display().to_string())
                     }
                     Err(e) => { eprintln!("  [!] MCP config failed: {e}"); None }
-                },
+                    }
+                }
                 Err(e) => { eprintln!("  [!] Playwright MCP unavailable ({e}); using built-in tools"); None }
             }
         } else {
@@ -272,6 +278,7 @@ async fn interactive(base: &Path) -> anyhow::Result<Cmd> {
     let backends = harness::installed_cli_backends();
     println!("\n  ┌────────────────────────────────────────────┐");
     println!("  │  NeuroSploit v3.4.1 — interactive            │");
+    println!("  │  by Joas A Santos & Red Team Leaders         │");
     println!("  └────────────────────────────────────────────┘");
     println!("  agents: {} · detected CLI logins: {}\n",
         lib.total(), if backends.is_empty() { "none".into() } else { backends.join(", ") });

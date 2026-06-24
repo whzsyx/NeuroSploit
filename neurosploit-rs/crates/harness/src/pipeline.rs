@@ -1,5 +1,5 @@
 use crate::agents::{Agent, Library};
-use crate::pool::ModelPool;
+use crate::pool::{ModelPool, Task};
 use crate::rl::{severity_reward, RlState};
 use crate::types::{Finding, RunConfig};
 use crate::report;
@@ -45,6 +45,12 @@ fn tool_doctrine(mcp_on: bool) -> String {
 const VOTE_SYS: &str = "You are an adversarial security validator. Decide if the candidate finding is a REAL, reproducible, exploitable vulnerability with proof. Reply with JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}. Default to rejected when uncertain.";
 const CODE_VOTE_SYS: &str = "You are an adversarial source-code reviewer. Decide if the reported issue is a REAL vulnerability in the provided code (reachable, exploitable, not a false positive). Reply JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}.";
 
+/// ReAct loop directive: make the agent reason → act with a tool → observe →
+/// iterate, instead of one-shot guessing. Keeps it grounded in real evidence.
+const REACT_DOCTRINE: &str = "METHOD (ReAct): work in explicit Thought → Action → Observation cycles. \
+Each Action runs ONE concrete tool command (e.g. a curl request); read its real Observation before the next Thought. \
+Base every claim on an actual observed response — never assume. Stop when you've either proven an issue or exhausted reasonable checks. Be token-efficient: no filler, no repetition.\n\n";
+
 /// Black-box web engagement: recon → parallel exploit → N-model vote → report.
 pub async fn run(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<String>) -> RunOutput {
     let _ = tx
@@ -63,7 +69,7 @@ pub async fn run(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<Str
         "{}".to_string()
     } else {
         let recon_user = format!("{}Target: {}", tool_doctrine(pool.mcp_config.is_some()), cfg.target);
-        match pool.complete(RECON_SYS, &recon_user).await {
+        match pool.complete_routed(Task::Recon, RECON_SYS, &recon_user).await {
             Ok((m, t)) => {
                 let _ = tx.send(format!("recon complete via {}", m.label())).await;
                 if cfg.verbose {
@@ -109,6 +115,11 @@ pub async fn run(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<Str
         let _ = tx.send("selection empty — using recon-keyword heuristic".into()).await;
         heuristic_select(&ranked, &recon, cap)
     };
+    // Dedup: never run the same agent twice in one engagement.
+    let selected: Vec<Agent> = {
+        let mut seen = std::collections::HashSet::new();
+        selected.into_iter().filter(|a| seen.insert(a.name.clone())).collect()
+    };
     let _ = tx
         .send(format!("intelligently selected {} agent(s) matching recon: {}", selected.len(),
             selected.iter().map(|a| a.name.clone()).collect::<Vec<_>>().join(", ")))
@@ -118,26 +129,29 @@ pub async fn run(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<Str
     let target = cfg.target.clone();
     let verbose = cfg.verbose;
     let mcp_on = pool.mcp_config.is_some();
+    // Token economy: each agent gets a capped recon context, not the full blob.
+    let recon_ctx: String = recon.chars().take(3500).collect();
     let raw: Vec<(String, String, Vec<Finding>)> = stream::iter(selected.iter().cloned())
         .map(|ag| {
             let target = target.clone();
-            let recon = recon.clone();
+            let recon = recon_ctx.clone();
             let txc = tx.clone();
             async move {
-                let user = format!(
-                    "AUTHORIZED engagement — you have explicit permission to test {target}. \
-                     Do not ask for confirmation — proceed and PROVE each issue.\n\n\
-                     {doctrine}{body}\n\nWhen done, reply with ONLY a JSON array of confirmed findings (may be empty []). \
-                     Each item: {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}. \
-                     `evidence` must contain the concrete proof (request/response excerpt).",
-                    target = target,
-                    doctrine = tool_doctrine(mcp_on),
-                    body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
-                );
                 if verbose {
                     let _ = txc.send(format!("  ▶ launching agent: {} ({})", ag.name, ag.title.replace(" Agent", ""))).await;
                 }
-                match pool.complete(&ag.system, &user).await {
+                let user = format!(
+                    "AUTHORIZED engagement — you have explicit permission to test {target}. \
+                     Do not ask for confirmation — proceed and PROVE each issue.\n\n\
+                     {react}{doctrine}{body}\n\nWhen done, reply with ONLY a JSON array of confirmed findings (may be empty []). \
+                     Each item: {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}. \
+                     `evidence` must contain the concrete proof (request/response excerpt).",
+                    target = target,
+                    react = REACT_DOCTRINE,
+                    doctrine = tool_doctrine(mcp_on),
+                    body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
+                );
+                match pool.complete_routed(Task::Exploit, &ag.system, &user).await {
                     Ok((m, text)) => {
                         let f = extract_findings(&text, &ag.name);
                         let _ = txc.send(format!("exploit {} via {} → {} candidate(s)", ag.name, m.label(), f.len())).await;
@@ -155,8 +169,8 @@ pub async fn run(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<Str
         .await;
 
     let transcript = transcript_of(&raw);
-    let candidates: Vec<Finding> = raw.iter().flat_map(|(_, _, f)| f.clone()).collect();
-    let _ = tx.send(format!("{} candidate finding(s) — validating by {}-model vote", candidates.len(), cfg.vote_n)).await;
+    let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
+    let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating by {}-model vote", candidates.len(), cfg.vote_n)).await;
 
     // ---- 4. Validate by N-model voting ---------------------------------
     let findings = validate(candidates, pool, VOTE_SYS, cfg.vote_n, &tx).await;
@@ -217,8 +231,8 @@ pub async fn run_whitebox(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: S
         .await;
 
     let transcript = transcript_of(&raw);
-    let candidates: Vec<Finding> = raw.iter().flat_map(|(_, _, f)| f.clone()).collect();
-    let _ = tx.send(format!("{} candidate finding(s) — validating", candidates.len())).await;
+    let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
+    let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating", candidates.len())).await;
     let findings = validate(candidates, pool, CODE_VOTE_SYS, cfg.vote_n, &tx).await;
     finish(cfg, lib, "{}".into(), transcript, findings, selected, &mut rl, tx).await
 }
@@ -235,8 +249,10 @@ async fn select_agents(pool: &ModelPool, recon: &str, catalog: &[Agent], tx: &Se
         .map(|a| format!("{} — {} [{}]", a.name, a.title.replace(" Agent", ""), a.cwe))
         .collect::<Vec<_>>()
         .join("\n");
-    let user = format!("RECON:\n{recon}\n\nAGENT CATALOG (name — title [cwe]):\n{list}\n\nReturn a JSON array of agent names to run.");
-    match pool.complete(SELECT_SYS, &user).await {
+    // Token economy: cap the recon blob fed to the selector.
+    let recon_trim: String = recon.chars().take(3000).collect();
+    let user = format!("RECON:\n{recon_trim}\n\nAGENT CATALOG (name — title [cwe]):\n{list}\n\nReturn a JSON array of agent names to run.");
+    match pool.complete_routed(Task::Select, SELECT_SYS, &user).await {
         Ok((m, text)) => {
             let names = parse_string_array(&text);
             if names.is_empty() {
@@ -520,6 +536,20 @@ fn conf(v: Option<&serde_json::Value>) -> f64 {
         }
         _ => 0.0,
     }
+}
+
+/// Drop duplicate findings (same CWE + endpoint + lowercased title) that
+/// different agents/models may each report, keeping the highest-confidence one.
+fn dedup_findings(mut v: Vec<Finding>) -> Vec<Finding> {
+    v.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+    let mut seen = std::collections::HashSet::new();
+    v.into_iter()
+        .filter(|f| {
+            let key = format!("{}|{}|{}", f.cwe.to_lowercase(), f.endpoint.to_lowercase(),
+                f.title.to_lowercase().chars().take(40).collect::<String>());
+            seen.insert(key)
+        })
+        .collect()
 }
 
 fn norm_sev(s: &str) -> String {

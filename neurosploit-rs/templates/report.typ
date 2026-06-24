@@ -40,6 +40,8 @@
   #text(13pt)[Target: #strong(meta.target)]
   #v(4pt)
   #text(10pt, fill: gray)[Run #meta.run_id · #meta.generated · models: #meta.model]
+  #v(8pt)
+  #text(9pt, fill: gray)[by #strong[Joas A Santos] & #strong[Red Team Leaders]]
 ]
 #pagebreak()
 

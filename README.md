@@ -1,10 +1,27 @@
-# NeuroSploit v3.4.1 🦀
+<h1 align="center">NeuroSploit v3.4.1 🦀</h1>
 
-![Version](https://img.shields.io/badge/Version-3.4.1-blue)
-![Harness](https://img.shields.io/badge/Harness-Rust%20%7C%20tokio-e6b673)
-![License](https://img.shields.io/badge/License-MIT-green)
-![Agents](https://img.shields.io/badge/MD%20Agents-249-red)
-![Models](https://img.shields.io/badge/Models-12%20providers-success)
+<p align="center">
+  <a href="https://github.com/JoasASantos/NeuroSploit/stargazers"><img src="https://img.shields.io/github/stars/JoasASantos/NeuroSploit?style=for-the-badge&logo=github&color=8b5cf6" alt="Stars"></a>
+  <a href="https://github.com/JoasASantos/NeuroSploit/network/members"><img src="https://img.shields.io/github/forks/JoasASantos/NeuroSploit?style=for-the-badge&logo=github&color=a855f7" alt="Forks"></a>
+  <a href="https://github.com/JoasASantos/NeuroSploit/issues"><img src="https://img.shields.io/github/issues/JoasASantos/NeuroSploit?style=for-the-badge&color=22d3ee" alt="Issues"></a>
+  <img src="https://img.shields.io/github/last-commit/JoasASantos/NeuroSploit?style=for-the-badge&color=34d399" alt="Last commit">
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Version-3.4.1-blue?style=flat-square">
+  <img src="https://img.shields.io/badge/Harness-Rust%20%7C%20tokio-e6b673?style=flat-square">
+  <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square">
+  <img src="https://img.shields.io/badge/MD%20Agents-303-red?style=flat-square">
+  <img src="https://img.shields.io/badge/Models-12%20providers-success?style=flat-square">
+  <img src="https://img.shields.io/badge/Auth-API%20key%20%7C%20Subscription-orange?style=flat-square">
+</p>
+
+<p align="center"><b>Autonomous, multi-model penetration-testing harness — Rust, CLI-only.</b><br>
+<i>by Joas A Santos &amp; Red Team Leaders</i></p>
+
+> ⭐ If this is useful, **star the repo** — it helps a lot.
+
+---
 
 **Autonomous, multi-model penetration-testing harness — Rust, CLI-only.**
 
@@ -17,6 +34,23 @@ discovered surface**, runs them in parallel, then validates every finding by
 **cross-model voting** before reporting.
 
 > The full project (Python engine, web GUIs, history) lives on the `main` branch.
+
+---
+
+## ⚡ Quick start (60 seconds)
+
+```bash
+# 1. build
+cd neurosploit-rs && cargo build --release
+
+# 2. easiest path — just run it, the wizard asks everything:
+./target/release/neurosploit
+
+# 3. or one-liner (subscription login, no API key needed):
+./target/release/neurosploit run http://testphp.vulnweb.com/ --subscription --model anthropic:claude-opus-4-8 -v
+```
+
+No login? Use an **API key** instead — see [Authentication](#authentication--run-via-api-key-or-subscription).
 
 ---
 
@@ -181,13 +215,13 @@ Every run writes a self-contained folder `runs/ns-<ts>-<target>/`:
 A reinforcement-learning reward store (`data/rl_state_rs.json`) biases agent
 selection on future runs.
 
-## Agent library — `agents_md/` (249)
+## Agent library — `agents_md/` (303)
 
 | Category | Count | Purpose |
 |----------|-------|---------|
 | `vulns/` | 196 | Exploit a specific vulnerability class |
 | `recon/` | 12 | Information gathering / attack surface |
-| `code/` | 24 | White-box source-code (SAST) review |
+| `code/` | 78 | White-box source-code (SAST) review |
 | `meta/` | 17 | Orchestrator, validator, scorers, reporter, RL |
 
 Each agent is a self-contained markdown playbook (`## User Prompt` methodology +
@@ -201,6 +235,10 @@ matching folder and the harness picks it up.
 For **authorized** testing only. Agents are instructed to stay in scope, never run
 destructive/DoS actions, and require proof-of-exploitation. You are responsible for
 having permission for any target.
+
+## Credits
+
+**Joas A Santos** & **Red Team Leaders**.
 
 ## License
 

@@ -81,7 +81,7 @@ pub fn html(target: &str, findings: &[Finding]) -> String {
          <h1><span class=b>NeuroSploit</span> Penetration Test Report</h1>\
          <div class=meta>Target: <b>{t}</b> · v3.4.1 Rust harness · multi-model validated</div>\
          <div>{chips}</div><h2>Findings ({n})</h2>{body}\
-         <p class=meta>Authorized testing only. Findings confirmed by multi-model adversarial voting.</p></body></html>",
+         <p class=meta>Authorized testing only. Findings confirmed by multi-model adversarial voting.<br>NeuroSploit v3.4.1 · by <b>Joas A Santos</b> &amp; <b>Red Team Leaders</b></p></body></html>",
         t = esc(target), chips = chips, n = sorted.len(), body = body,
     )
 }
