@@ -42,6 +42,11 @@ pub fn providers() -> Vec<Provider> {
             models: vec!["llama-3.3-70b-versatile", "qwen-2.5-coder-32b"] },
         Provider { key: "together", label: "Together AI", base_url: "https://api.together.xyz/v1", env_key: "TOGETHER_API_KEY", kind: "api",
             models: vec!["Qwen/Qwen2.5-Coder-32B-Instruct", "deepseek-ai/DeepSeek-R1", "meta-llama/Llama-3.3-70B-Instruct-Turbo"] },
+        // LiteLLM proxy (OpenAI-compatible). Point at your gateway with
+        // LITELLM_BASE_URL (default http://localhost:4000/v1); key = LITELLM_API_KEY.
+        // Use `litellm:<any-model-the-proxy-routes>` — model names pass through.
+        Provider { key: "litellm", label: "LiteLLM (proxy)", base_url: "http://localhost:4000/v1", env_key: "LITELLM_API_KEY", kind: "api",
+            models: vec!["gpt-4o", "claude-3-7-sonnet", "gemini/gemini-2.5-pro"] },
         Provider { key: "openrouter", label: "OpenRouter", base_url: "https://openrouter.ai/api/v1", env_key: "OPENROUTER_API_KEY", kind: "api",
             models: vec!["anthropic/claude-opus-4-8", "qwen/qwen-2.5-coder-32b-instruct", "deepseek/deepseek-r1", "meta-llama/llama-3.3-70b-instruct"] },
         Provider { key: "ollama", label: "Ollama (local)", base_url: "http://localhost:11434/v1", env_key: "OLLAMA_API_KEY", kind: "api",
@@ -93,10 +98,16 @@ impl ChatClient {
         let p = provider_for(&m.provider)
             .ok_or_else(|| anyhow!("unknown provider '{}'", m.provider))?;
         let key = std::env::var(p.env_key).unwrap_or_default();
-        if key.is_empty() && p.key != "ollama" {
+        if key.is_empty() && p.key != "ollama" && p.key != "litellm" {
             return Err(anyhow!("no API key ({}) for provider '{}'", p.env_key, p.key));
         }
-        let url = format!("{}/chat/completions", p.base_url.trim_end_matches('/'));
+        // Allow an env base-URL override (LiteLLM gateway, self-hosted proxies, …).
+        let base = match p.key {
+            "litellm" => std::env::var("LITELLM_BASE_URL").unwrap_or_else(|_| p.base_url.to_string()),
+            "ollama" => std::env::var("OLLAMA_BASE_URL").unwrap_or_else(|_| p.base_url.to_string()),
+            _ => p.base_url.to_string(),
+        };
+        let url = format!("{}/chat/completions", base.trim_end_matches('/'));
         let body = serde_json::json!({
             "model": m.model,
             "max_tokens": 4096,

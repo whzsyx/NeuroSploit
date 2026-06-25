@@ -126,6 +126,9 @@ export GROQ_API_KEY=...                  # groq:*
 export TOGETHER_API_KEY=...              # together:*
 export OPENROUTER_API_KEY=...            # openrouter:*
 # ollama: no key (local)
+# LiteLLM proxy: point at your gateway and route any model through it:
+export LITELLM_BASE_URL=http://localhost:4000/v1   # your LiteLLM proxy
+export LITELLM_API_KEY=sk-...                       # litellm:<model the proxy routes>
 
 neurosploit run http://testphp.vulnweb.com/ --model anthropic:claude-opus-4-8 --vote-n 3 -v
 ```
