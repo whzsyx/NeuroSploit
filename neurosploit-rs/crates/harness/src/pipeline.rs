@@ -60,7 +60,11 @@ fn tool_doctrine(mcp_on: bool) -> String {
          Use only what is installed; degrade gracefully. Never run destructive or DoS actions.\n\n"
     )
 }
-const VOTE_SYS: &str = "You are an adversarial security validator. Decide if the candidate finding is a REAL, reproducible, exploitable vulnerability with proof. Reply with JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}. Default to rejected when uncertain.";
+const VOTE_SYS: &str = "You are an adversarial security validator. Decide if the candidate finding is a REAL, reproducible, exploitable vulnerability whose EVIDENCE actually proves impact. Reject common false positives: input merely reflected but not executed; version/banner guesses with no working PoC; self-XSS; theoretical issues; an error message or stack trace mistaken for injection; missing, generic, or non-reproducible evidence; severity inflated beyond what the evidence demonstrates. Confirm only if the provided evidence (request/response) concretely proves the vulnerability. Reply with JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}. Default to rejected when uncertain.";
+/// Adversarial second pass for High/Critical findings: assume false positive
+/// until the evidence forces otherwise. A finding that can't withstand the
+/// skeptics is dropped.
+const REFUTE_SYS: &str = "You are a skeptical senior reviewer trying to DISPROVE a reported vulnerability. Assume it is a FALSE POSITIVE unless the evidence forces otherwise. Scrutinize: does the evidence PROVE execution/impact, or only that input was reflected/accepted? Is there a real working PoC, or just a version/banner/theory? Could it be self-XSS, an error message, or an unreachable path? Reply JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"} where confirmed means the vulnerability is REAL and proven by the evidence. When in doubt, reject.";
 const CODE_VOTE_SYS: &str = "You are an adversarial source-code reviewer. Decide if the reported issue is a REAL vulnerability in the provided code (reachable, exploitable, not a false positive). Reply JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}.";
 
 /// ReAct loop directive: make the agent reason → act with a tool → observe →
@@ -225,6 +229,7 @@ pub async fn run(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<Str
         findings.extend(extra);
         findings = dedup_findings(findings);
     }
+    let findings = refute_pass(findings, pool, cfg.vote_n, &tx).await;
     finish(cfg, lib, recon, transcript, findings, selected, &mut rl, tx).await
 }
 
@@ -286,6 +291,7 @@ pub async fn run_whitebox(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: S
     let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
     let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating", candidates.len())).await;
     let findings = validate(candidates, pool, CODE_VOTE_SYS, cfg.vote_n, &tx).await;
+    let findings = refute_pass(findings, pool, cfg.vote_n, &tx).await;
     finish(cfg, lib, "{}".into(), transcript, findings, selected, &mut rl, tx).await
 }
 
@@ -428,6 +434,7 @@ pub async fn run_greybox(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Se
         findings.extend(extra);
         findings = dedup_findings(findings);
     }
+    let findings = refute_pass(findings, pool, cfg.vote_n, &tx).await;
     finish(cfg, lib, recon, transcript, findings, selected, &mut rl, tx).await
 }
 
@@ -603,11 +610,11 @@ async fn validate(candidates: Vec<Finding>, pool: &ModelPool, sys: &str, vote_n:
             let finder = finder.clone();
             async move {
                 let q = format!(
-                    "Finding: {} | severity {} | {} | at {} | payload {} | evidence {}",
-                    f.title, f.severity, f.cwe, f.endpoint, f.payload, f.evidence
+                    "Finding: {} | severity {} | {} | at {} | payload {} | evidence {} | impact {}",
+                    f.title, f.severity, f.cwe, f.endpoint, f.payload, f.evidence, f.impact
                 );
                 let (yes, total) = pool.vote(sys, &q, vote_n, finder.as_deref()).await;
-                f.validated = total > 0 && yes * 2 >= total;
+                f.validated = crate::pool::quorum_confirmed(&f.severity, yes, total);
                 f.votes = format!("{yes}/{total}");
                 if f.confidence == 0.0 && total > 0 {
                     f.confidence = yes as f64 / total as f64;
@@ -620,6 +627,37 @@ async fn validate(candidates: Vec<Finding>, pool: &ModelPool, sys: &str, vote_n:
         .collect()
         .await;
     validated.into_iter().filter(|f| f.validated).collect()
+}
+
+/// Adversarial refutation pass: every confirmed **High/Critical** finding is
+/// re-examined by a skeptical panel that tries to prove it's a false positive.
+/// A finding that fails to withstand a majority of skeptics is dropped. Lower
+/// severities pass through unchanged. Runs only when a real panel exists.
+async fn refute_pass(findings: Vec<Finding>, pool: &ModelPool, vote_n: usize, tx: &Sender<String>) -> Vec<Finding> {
+    let finder = pool.candidates.first().map(|m| m.label());
+    let mut kept = Vec::new();
+    for mut f in findings {
+        let s = f.severity.to_lowercase();
+        let high = s.starts_with("crit") || s.starts_with("high");
+        if !high || pool.stop_exploiting() {
+            kept.push(f);
+            continue;
+        }
+        let q = format!(
+            "Finding: {} | severity {} | {} | at {} | payload {} | evidence {} | impact {}",
+            f.title, f.severity, f.cwe, f.endpoint, f.payload, f.evidence, f.impact
+        );
+        let (yes, total) = pool.vote(REFUTE_SYS, &q, vote_n.max(2), finder.as_deref()).await;
+        // Survive on no-response (infra failure) or a surviving majority.
+        let survives = total == 0 || yes * 2 > total;
+        if survives {
+            if total > 0 { f.votes = format!("{} · refute {yes}/{total}", f.votes); }
+            kept.push(f);
+        } else {
+            let _ = tx.send(format!("vote {} → dropped by adversarial refute ({yes}/{total})", f.title)).await;
+        }
+    }
+    kept
 }
 
 async fn finish(cfg: RunConfig, _lib: &Library, recon: String, transcript: String, mut findings: Vec<Finding>,
@@ -994,5 +1032,6 @@ pub async fn run_host(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sende
         findings.extend(extra);
         findings = dedup_findings(findings);
     }
+    let findings = refute_pass(findings, pool, cfg.vote_n, &tx).await;
     finish(cfg, lib, recon, transcript, findings, selected, &mut rl, tx).await
 }
