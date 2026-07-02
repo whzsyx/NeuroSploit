@@ -92,6 +92,35 @@ interactive line-editing.
 - **Rate-limit testing** is a first-class control check (small non-disruptive
   burst → look for 429/lockout/Retry-After), never a DoS.
 
+## Multi-role auth & access-control testing
+
+- **Named identities in `creds.yaml`** for IDOR / BOLA / BFLA / privilege-escalation
+  testing. Define two or more roles and the agent authenticates as each and tests
+  **cross-role access** (control vs unauthorized request):
+  ```yaml
+  admin:
+    jwt: eyJ...              # or header:/cookie:/apikey:/login+username+password
+  user:
+    apikey: abc123          # → X-Api-Key: abc123
+  victim:
+    cookie: "session=..."
+  ```
+  Supported per role: `jwt`, `header` (raw), `cookie`, `apikey`, or a
+  `login`/`username`/`password` self-login. With ≥2 roles the harness injects an
+  access-control directive (capture one role's object IDs/functions, attempt them
+  as another role, prove authorized-vs-denied) under the data-safety guardrail.
+
+## Attribution & identification (anti-plagiarism)
+
+- **Identifying User-Agent** on every request — default
+  `NeuroSploit/<ver> (authorized security assessment; +github…)`, plus an
+  `X-NeuroSploit-Scan` header. Change it with **`/ua <string>`** (REPL) or the
+  `NEUROSPLOIT_UA` env var; the run banner shows it.
+- **Attribution stamped into every finding** ("Identified and validated by
+  NeuroSploit — multi-model adversarial validation …") so provenance travels with
+  the finding across the report, `findings.json` and any copy — in the traffic,
+  the finding text, and the report footer, so the work can't be silently re-badged.
+
 ## Notes
 
 - Additive/back-compatible. Provider count is 14 (Azure OpenAI added in v3.5.2).

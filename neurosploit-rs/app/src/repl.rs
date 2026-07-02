@@ -119,7 +119,7 @@ struct LiveCheckpoint {
 const COMMANDS: &[&str] = &[
     "/help", "/show", "/config", "/providers", "/model", "/key", "/sub", "/target",
     "/repo", "/auth", "/creds", "/focus", "/attach", "/context", "/mcp", "/offline",
-    "/votes", "/chain", "/timeout", "/proxy", "/burp", "/agents", "/theme", "/clear", "/run", "/stop", "/continue", "/runs", "/results", "/report",
+    "/votes", "/chain", "/timeout", "/proxy", "/burp", "/ua", "/agents", "/theme", "/clear", "/run", "/stop", "/continue", "/runs", "/results", "/report",
     "/status", "/diff", "/retest", "/finding", "/expand", "/integrations", "/quit",
 ];
 
@@ -219,6 +219,8 @@ struct Session {
     idle_secs: u64,
     /// Local intercepting proxy (Burp/ZAP), e.g. http://127.0.0.1:8080.
     proxy: Option<String>,
+    /// Identifying User-Agent for NeuroSploit traffic (None = default UA).
+    user_agent: Option<String>,
     offline: bool,
     target: Option<String>,
     repo: Option<String>,
@@ -240,6 +242,7 @@ impl Default for Session {
             chain_depth: 2,
             idle_secs: 300, // 5-minute idle guardrail by default
             proxy: None,
+            user_agent: None,
             offline: false,
             target: None,
             repo: None,
@@ -439,6 +442,14 @@ pub async fn repl(base: &Path) -> anyhow::Result<()> {
                     s.idle_secs = mins.saturating_mul(60);
                     if mins == 0 { println!("  idle guardrail: off"); }
                     else { println!("  idle guardrail: stop if no new finding in {mins} min"); }
+                }
+            }
+            "/ua" | "/useragent" => {
+                match arg {
+                    "" => println!("  user-agent: {}  \x1b[2m(identifies NeuroSploit traffic)\x1b[0m",
+                        s.user_agent.clone().unwrap_or_else(harness::pipeline::default_user_agent)),
+                    "default" | "reset" => { s.user_agent = None; println!("  user-agent reset to default (NeuroSploit)"); }
+                    u => { s.user_agent = Some(u.to_string()); println!("  user-agent: {u}"); }
                 }
             }
             "/proxy" | "/burp" => {
@@ -755,6 +766,7 @@ async fn run(base: &Path, s: &Session, history: &mut Vec<RunRecord>) {
     cfg.vote_n = s.vote_n;
     cfg.chain_depth = s.chain_depth;
     cfg.proxy = s.proxy.clone();
+    cfg.user_agent = s.user_agent.clone();
     cfg.max_agents = s.max_agents;
     cfg.verbose = true;
     cfg.offline = s.offline;
@@ -809,6 +821,7 @@ async fn start_background(base: &Path, s: &Session, reader: &mut Reader,
     cfg.vote_n = s.vote_n;
     cfg.chain_depth = s.chain_depth;
     cfg.proxy = s.proxy.clone();
+    cfg.user_agent = s.user_agent.clone();
     cfg.max_agents = s.max_agents;
     cfg.verbose = true;
     cfg.offline = s.offline;
@@ -1243,6 +1256,7 @@ fn show(s: &Session) {
     println!("  │  auth     : {}", s.auth.clone().unwrap_or_else(|| "(none)".into()));
     println!("  │  creds    : {}", s.creds.clone().unwrap_or_else(|| "(none)".into()));
     println!("  │  proxy    : {}", s.proxy.clone().unwrap_or_else(|| "(none — /proxy for Burp/ZAP)".into()));
+    println!("  │  user-agent: {}", s.user_agent.clone().unwrap_or_else(|| "NeuroSploit (default)".into()));
     println!("  │  focus    : {}", s.instructions.clone().unwrap_or_else(|| "(none — tests everything)".into()));
     println!("  │  opts     : mcp={} offline={} votes={} chain-depth={} max-agents={} idle-stop={}",
         onoff(s.mcp), onoff(s.offline), s.vote_n, s.chain_depth, s.max_agents,
@@ -1278,7 +1292,7 @@ fn help() {
     h("/target <url[,..]>", "black-box target URL (comma-separated = multi-target, sequential)");
     h("/repo <path|url>",   "analyse a repo — path or GitHub URL (repo + target = greybox)");
     h("/auth <value>",      "auth header, e.g. 'Authorization: Bearer <jwt>' (no arg = show)");
-    h("/creds <file.yaml>", "credentials: jwt/header/cookie/login + ssh/windows + aws/gcp/azure");
+    h("/creds <file.yaml>", "creds: jwt/header/cookie/login + ssh/windows + aws/gcp/azure + roles");
     h("/focus <text>",      "steer the tests (or just type the instruction)");
     h("@path @dir @f:1-20", "attach a file/folder/line-range to context (Tab → menu)");
     h("/attach <path>",     "attach a file/folder to context");
@@ -1312,6 +1326,7 @@ fn help() {
     h("/chain <n>",         "attack-chain depth (post-exploitation pivots; 0 = off)");
     h("/timeout <min>",     "idle guardrail: stop if no new finding in <min> (0 = off)");
     h("/proxy <url>|off",   "route agent HTTP through Burp/ZAP  (/burp = default :8080)");
+    h("/ua <string>",       "identifying User-Agent for NeuroSploit traffic (default = NeuroSploit)");
     h("/agents <n>|list",   "cap agents to run · `list` shows library counts");
     h("/theme color|mono",  "toggle colored output");
     h("/show",              "show the current session config");

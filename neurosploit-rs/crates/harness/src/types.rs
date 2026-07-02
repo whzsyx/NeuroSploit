@@ -133,6 +133,10 @@ pub struct RunConfig {
     /// traffic in Burp Suite.
     #[serde(default)]
     pub proxy: Option<String>,
+    /// Custom User-Agent for identifying NeuroSploit traffic (attribution).
+    /// Defaults to the NeuroSploit UA when unset.
+    #[serde(default)]
+    pub user_agent: Option<String>,
 }
 
 fn default_vote() -> usize {
@@ -165,6 +169,7 @@ impl RunConfig {
             pinned: Vec::new(),
             chain_depth: 2,
             proxy: None,
+            user_agent: None,
         }
     }
 }

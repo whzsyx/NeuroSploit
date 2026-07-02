@@ -467,6 +467,16 @@ pub(crate) async fn apply_creds(cfg: &mut RunConfig, path: Option<&str>) {
     if cfg.auth.is_none() {
         cfg.auth = c.auth_header();
     }
+    // Multiple identities/roles → access-control testing (IDOR/BOLA/BFLA/privesc).
+    if let Some(ri) = c.roles_instruction() {
+        if cfg.auth.is_none() {
+            cfg.auth = c.roles.iter().find_map(|r| r.header_line());
+        }
+        let base = cfg.instructions.clone().unwrap_or_default();
+        cfg.instructions = Some(format!("{ri}\n{base}"));
+        println!("  [*] {} identities loaded ({}) — access-control testing enabled",
+            c.roles.len(), c.roles.iter().map(|r| r.name.clone()).collect::<Vec<_>>().join("/"));
+    }
     // Host credentials (SSH / Windows-AD) → tell the agents how to authenticate
     // to the host so they can run on-host enumeration / privesc / AD checks.
     if let Some(hi) = c.host_instruction() {
@@ -563,6 +573,13 @@ pub(crate) fn spawn_engagement(base: &Path, mut cfg: RunConfig, mcp: bool, mode:
         std::env::set_var("NEUROSPLOIT_PROXY", &p);
         println!("  │  proxy  : {p} (traffic routed to Burp/ZAP for inspection)");
     }
+    // Identifying User-Agent (attribution): cfg.user_agent overrides the default.
+    let ua = cfg.user_agent.clone()
+        .or_else(|| std::env::var("NEUROSPLOIT_UA").ok())
+        .filter(|u| !u.trim().is_empty())
+        .unwrap_or_else(harness::pipeline::default_user_agent);
+    std::env::set_var("NEUROSPLOIT_UA", &ua);
+    println!("  │  ua     : {ua}");
     write_status(&workdir, "running", &format!("\"target\":{:?}", cfg.target));
 
     println!("  ┌─ NeuroSploit v3.5.5  ·  by Joas A Santos & Red Team Leaders");
@@ -629,6 +646,7 @@ pub(crate) fn report_url(workdir: &Path) -> String {
 /// when the user chooses "report without validating" on /stop.
 pub(crate) fn report_raw(target: &str, findings: &[harness::types::Finding], workdir: &Path) {
     let mut fs = findings.to_vec();
+    harness::pipeline::stamp_attribution(&mut fs); // provenance travels with raw reports too
     harness::attack_graph::enrich(&mut fs);
     std::fs::write(workdir.join("findings.json"), serde_json::to_string_pretty(&fs).unwrap_or_default()).ok();
     let _ = harness::report::typst_report(target, &fs, workdir);

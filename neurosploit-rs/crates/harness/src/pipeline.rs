@@ -85,11 +85,46 @@ fn tool_doctrine(mcp_on: bool) -> String {
            repo or download a tool (`git clone`, `wget`, `pip install`, `go install`, `cargo install`) — use pinned, \
            reputable sources; review before running; never run destructive payloads.\n\
          - {browser}\n\
-         - {proxy}{pocs}\
+         - {ua}{proxy}{pocs}\
          Use only what is installed; degrade gracefully. Never run destructive or DoS actions.\n\n",
+        ua = ua_line(),
         proxy = proxy_line(),
         pocs = pocs_line(),
     )
+}
+
+/// Default identifying User-Agent so target owners (and the operator) can tell
+/// traffic came from NeuroSploit — and so authorship of a scan is unambiguous.
+pub fn default_user_agent() -> String {
+    format!("NeuroSploit/{} (authorized security assessment; +https://github.com/JoasASantos/NeuroSploit)",
+        env!("CARGO_PKG_VERSION"))
+}
+
+/// Identify NeuroSploit traffic at the request layer (User-Agent + a marker
+/// header). Overridable via `NEUROSPLOIT_UA`.
+fn ua_line() -> String {
+    let ua = std::env::var("NEUROSPLOIT_UA").ok().filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(default_user_agent);
+    format!(
+        "IDENTIFY (attribution — do NOT strip): tag every HTTP request as NeuroSploit so the scan is \
+         attributable — add `-A \"{ua}\"` (User-Agent) AND `-H \"X-NeuroSploit-Scan: {}\"` to curl. Only omit \
+         when a specific test requires a different/absent User-Agent.\n         ",
+        env!("CARGO_PKG_VERSION"))
+}
+
+/// Attribution stamped into every finding's impact so the provenance travels
+/// with the finding across the report, findings.json and any copy — making it
+/// hard to silently re-badge NeuroSploit's output as someone else's work.
+const ATTRIBUTION: &str = "Identified and validated by NeuroSploit (multi-model adversarial validation) — https://github.com/JoasASantos/NeuroSploit · by Joas A Santos & Red Team Leaders.";
+
+/// Append the NeuroSploit attribution to each finding's impact (idempotent).
+pub fn stamp_attribution(findings: &mut [Finding]) {
+    for f in findings.iter_mut() {
+        if !f.impact.contains("Identified and validated by NeuroSploit") {
+            let sep = if f.impact.trim().is_empty() { "" } else { "\n\n" };
+            f.impact = format!("{}{sep}{ATTRIBUTION}", f.impact.trim_end());
+        }
+    }
 }
 
 /// If a local proxy is configured (Burp/ZAP), tell agents to route HTTP through
@@ -878,6 +913,8 @@ async fn finish(cfg: RunConfig, _lib: &Library, recon: String, transcript: Strin
     }
 
     let _ = tx.send(format!("{} validated finding(s)", findings.len())).await;
+    // Attribution: stamp provenance into each finding (report + json + copies).
+    stamp_attribution(&mut findings);
     // Map findings to OWASP / MITRE / kill-chain stage for the attack graph.
     crate::attack_graph::enrich(&mut findings);
 

@@ -243,6 +243,39 @@ auth: **AWS** access keys or profile; **GCP** a service-account JSON
 
 ---
 
+## 👥 Multiple identities — access-control testing (IDOR / BOLA / BFLA)
+
+Give NeuroSploit two or more **named roles** in `creds.yaml` and it authenticates
+as each and tests **cross-role** access (a low-priv role reaching another user's
+object or an admin function is a finding):
+
+```yaml
+admin:
+  jwt: eyJ...                 # per role: jwt | header (raw) | cookie | apikey | login+username+password
+user:
+  apikey: abc123              # → X-Api-Key: abc123
+victim:
+  cookie: "session=deadbeef"
+```
+
+```bash
+neurosploit run https://app.example --creds creds.yaml \
+  --subscription --model anthropic:claude-opus-4-8 -v
+```
+
+Each finding is proven with the **authorized vs unauthorized** request pair, under
+the data-safety guardrail (read-only, PII masked).
+
+## 🏷️ Identification & attribution (anti-plagiarism)
+
+Every request is tagged with an identifying **User-Agent** (default
+`NeuroSploit/<ver> …`, change with **`/ua`** or `NEUROSPLOIT_UA`) plus an
+`X-NeuroSploit-Scan` header, and every finding is **stamped** "Identified and
+validated by NeuroSploit" — so provenance travels in the traffic, the finding
+text, `findings.json` and the report footer.
+
+---
+
 ## Build
 
 ```bash

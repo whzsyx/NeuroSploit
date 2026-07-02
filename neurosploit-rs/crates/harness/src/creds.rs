@@ -80,6 +80,38 @@ impl Cloud {
     }
 }
 
+/// A named identity/role for multi-user access-control testing (IDOR / BOLA /
+/// BFLA / privilege escalation). Each carries ONE way to authenticate.
+#[derive(Default, Debug, Clone)]
+pub struct Identity {
+    pub name: String,             // e.g. "admin", "user", "victim"
+    pub jwt: String,              // → Authorization: Bearer <jwt>
+    pub header: String,           // raw header, e.g. "X-Api-Key: abc"
+    pub cookie: String,           // → Cookie: <cookie>
+    pub apikey: String,           // → X-Api-Key: <apikey> (unless it contains ':')
+    pub login_url: String,        // login endpoint (agent authenticates itself)
+    pub username: String,
+    pub password: String,
+}
+
+impl Identity {
+    /// The ready-to-send auth header for this identity, if it has direct material.
+    pub fn header_line(&self) -> Option<String> {
+        if !self.header.is_empty() { return Some(self.header.clone()); }
+        if !self.jwt.is_empty() { return Some(format!("Authorization: Bearer {}", self.jwt)); }
+        if !self.apikey.is_empty() {
+            return Some(if self.apikey.contains(':') { self.apikey.clone() } else { format!("X-Api-Key: {}", self.apikey) });
+        }
+        if !self.cookie.is_empty() { return Some(format!("Cookie: {}", self.cookie)); }
+        None
+    }
+    fn describe(&self) -> String {
+        if let Some(h) = self.header_line() { format!("{} → send `{}`", self.name, h) }
+        else if !self.login_url.is_empty() { format!("{} → log in at {} as {}:{} and reuse the session", self.name, self.login_url, self.username, self.password) }
+        else { format!("{} → (no usable credential)", self.name) }
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct Creds {
     pub jwt: Option<String>,
@@ -89,6 +121,8 @@ pub struct Creds {
     pub ssh: Option<Ssh>,
     pub win: Option<Win>,
     pub cloud: Option<Cloud>,
+    /// Named identities for multi-role access-control testing.
+    pub roles: Vec<Identity>,
 }
 
 impl Creds {
@@ -100,7 +134,9 @@ impl Creds {
         let mut win = Win::default();
         let mut cloud = Cloud::default();
         let (mut have_login, mut have_ssh, mut have_win) = (false, false, false);
-        let mut block = ""; // "", "login", "ssh", "windows", "aws", "gcp", "azure"
+        let mut roles: Vec<Identity> = Vec::new();
+        let mut cur_role = 0usize;
+        let mut block = ""; // "", "login", "ssh", "windows", "aws", "gcp", "azure", "role"
         for raw in text.lines() {
             let line = raw.split('#').next().unwrap_or("");
             if line.trim().is_empty() {
@@ -120,7 +156,9 @@ impl Creds {
                     "aws" => "aws",
                     "gcp" | "google" | "gcloud" => "gcp",
                     "azure" | "az" => "azure",
-                    _ => "",
+                    "roles" | "identities" | "users" => "", // optional wrapper — ignore
+                    // Any other named block is a role/identity for access-control testing.
+                    other => { roles.push(Identity { name: other.to_string(), ..Default::default() }); cur_role = roles.len() - 1; "role" }
                 };
                 continue;
             }
@@ -172,6 +210,18 @@ impl Creds {
                         "subscription_id" | "subscription" => cloud.azure_subscription_id = v,
                         _ => {}
                     },
+                    "role" => if let Some(r) = roles.get_mut(cur_role) {
+                        match k.as_str() {
+                            "jwt" | "token" => r.jwt = v,
+                            "header" => r.header = v,
+                            "cookie" => r.cookie = v,
+                            "apikey" | "api_key" | "key" => r.apikey = v,
+                            "login" | "url" | "login_url" => r.login_url = v,
+                            "username" | "user" => r.username = v,
+                            "password" | "pass" => r.password = v,
+                            _ => {}
+                        }
+                    },
                     _ => {}
                 }
                 continue;
@@ -188,11 +238,34 @@ impl Creds {
         if have_ssh && !ssh.host.is_empty() { c.ssh = Some(ssh); }
         if have_win && !win.host.is_empty() { c.win = Some(win); }
         if !cloud.is_empty() { c.cloud = Some(cloud); }
+        roles.retain(|r| r.header_line().is_some() || !r.login_url.is_empty());
+        c.roles = roles;
         if c.jwt.is_none() && c.header.is_none() && c.cookie.is_none()
-            && c.login.is_none() && c.ssh.is_none() && c.win.is_none() && c.cloud.is_none() {
+            && c.login.is_none() && c.ssh.is_none() && c.win.is_none() && c.cloud.is_none()
+            && c.roles.is_empty() {
             return None;
         }
         Some(c)
+    }
+
+    /// Multi-role access-control testing directive: lists every identity and
+    /// instructs the agent to test cross-role access (IDOR/BOLA, BFLA, privesc)
+    /// by acting as each role against the others' objects and functions.
+    pub fn roles_instruction(&self) -> Option<String> {
+        if self.roles.len() < 2 { return None; }
+        let list = self.roles.iter().map(|r| format!("  - {}", r.describe())).collect::<Vec<_>>().join("\n");
+        Some(format!(
+            "MULTI-ROLE ACCESS CONTROL — you have {} identities:\n{list}\n\
+             Authenticate as EACH identity (use its header on every request, or log in first for a login: role and \
+             reuse the session). Then test broken access control across roles:\n\
+             - BOLA/IDOR: as a low-privilege role, capture your own object IDs, then try to READ/UPDATE another \
+               role's objects by their IDs; a low-priv role reaching a high-priv/other-user object is a finding.\n\
+             - BFLA: call admin-only functions/endpoints/HTTP methods with a low-privilege role's session.\n\
+             - Privilege escalation: mass-assignment of role/permission fields, or reaching admin routes.\n\
+             Always compare against the control (the authorized role should succeed; the unauthorized role should be \
+             denied). Prove each with the two requests (authorized vs unauthorized) and their responses. Respect data \
+             safety — read-only proof, mask any PII.\n",
+            self.roles.len()))
     }
 
     /// Environment variables to export so the `aws`/`gcloud`/`az` CLIs the agents
