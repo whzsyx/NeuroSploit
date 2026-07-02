@@ -123,10 +123,28 @@ pub struct RunConfig {
     /// agents (skipping recon-based selection) — used by the category picker.
     #[serde(default)]
     pub pinned: Vec<String>,
+    /// Attack-chaining depth: how many post-exploitation pivot rounds to run
+    /// from confirmed findings (0 disables chaining). Each round expands the
+    /// newest footholds in new directions, carrying discovered loot forward.
+    #[serde(default = "default_chain_depth")]
+    pub chain_depth: usize,
+    /// Optional local intercepting proxy (Burp/ZAP), e.g. http://127.0.0.1:8080.
+    /// When set, agents route HTTP through it so the operator can inspect/replay
+    /// traffic in Burp Suite.
+    #[serde(default)]
+    pub proxy: Option<String>,
+    /// Custom User-Agent for identifying NeuroSploit traffic (attribution).
+    /// Defaults to the NeuroSploit UA when unset.
+    #[serde(default)]
+    pub user_agent: Option<String>,
 }
 
 fn default_vote() -> usize {
     3
+}
+
+fn default_chain_depth() -> usize {
+    2
 }
 fn default_concurrency() -> usize {
     8
@@ -149,6 +167,9 @@ impl RunConfig {
             auth: None,
             repo: None,
             pinned: Vec::new(),
+            chain_depth: 2,
+            proxy: None,
+            user_agent: None,
         }
     }
 }

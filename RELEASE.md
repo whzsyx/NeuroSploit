@@ -1,3 +1,247 @@
+# NeuroSploit v3.5.5 — Release Notes
+
+**Release Date:** July 2026
+**Codename:** Cloud Testing, REPL Navigation & Deeper Recon
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+v3.5.5 adds **cloud infrastructure testing** (AWS / GCP / Azure) with first-class
+credential connection, **27 new agents** (17 cloud + 10 misconfig/CVE/PoC/rate-
+limit → library **375**), a much more capable and navigable **REPL** (idle
+guardrail, multi-target, results browser), **deeper recon** (downloads & analyzes
+JS, request/response differentials, smart nuclei), **Burp/ZAP proxy** support, a
+**PoC** workspace, a strict **data-safety/PII guardrail**, and a fix for garbled
+interactive line-editing.
+
+## Cloud testing
+
+- **+17 cloud agents.** AWS, GCP and Azure specialists in
+  `agents_md/infra/`: IAM/RBAC privilege escalation, storage exposure
+  (S3 / GCS / Blob), compute & network exposure + IMDS, secrets (Secrets Manager /
+  Secret Manager / Key Vault), service-account & service-principal abuse, and
+  Entra ID enumeration — plus a multi-cloud footprint/identity recon agent.
+  Read-only-first, non-destructive.
+- **Connect cloud credentials via `creds.yaml`** (`aws:`, `gcp:`, `azure:`
+  blocks). The harness exports the right env vars so `aws` / `gcloud` / `az` pick
+  them up automatically, and tells the agents how to authenticate & what to
+  enumerate:
+  - **AWS** — `access_key_id`/`secret_access_key`[/`session_token`]/`region`, or a `profile`.
+  - **GCP** — a service-account JSON (`service_account_json`, path recommended) →
+    `GOOGLE_APPLICATION_CREDENTIALS` + project.
+  - **Azure** — a **service principal** (`tenant_id`/`client_id`/`client_secret`/
+    `subscription_id`) → `az login --service-principal`.
+  - Secrets are never written to disk beyond your `creds.yaml`; inline GCP JSON is
+    materialized to a temp file only to satisfy the SDK/CLI.
+
+## REPL — navigation & control
+
+- **Idle guardrail — `/timeout <min>`.** If no NEW finding lands within the
+  window, the run soft-stops and validates what was found (`/timeout 1` = 1 min,
+  `10` = 10 min, `60` = 1 hour, `0` = off). **Default 5 min.**
+- **Multiple targets — `/target url1,url2,url3`.** A comma-separated list; `/run`
+  tests them **sequentially** (a queue auto-advances to the next when the current
+  finishes) — one report per URL.
+- **`/results` navigation browser** (interactive): pick a **target/run** → pick a
+  **vulnerability** → see full detail; **Esc steps back a level** (vuln → target →
+  back to the live session).
+- **`/report` selection**: with multiple runs, choose which report to open from a
+  menu.
+- **`/chain <n>`** (attack-chain depth), **`/agents list`** (library category
+  counts incl. infra/cloud); **`/show`** now shows chain-depth, idle-stop and
+  enabled integrations.
+- **Fix:** the interactive prompt no longer embeds ANSI/newline, so line editing
+  (typing, backspace, history, cursor, multiline) is no longer garbled in a real
+  terminal (the readline prompt is plain; color is applied via the highlighter).
+
+## Deeper recon & analysis (agent prompts)
+
+- **RECON_SYS** now crawls pages/params/headers/cookies, **downloads the linked
+  JavaScript and analyzes it** (API endpoints, hidden params, GraphQL, secrets /
+  keys / tokens, `sourceMappingURL` → recover original source), fingerprints
+  **exact** stack versions, and does response-differential analysis; richer JSON
+  schema (`js_findings`, `secrets`, `hosts`, …).
+- **tool_doctrine** adds JS-analysis (linkfinder / gau / katana + grep for
+  endpoints/secrets/source-maps) and request/response-analysis guidance (status,
+  all headers, Set-Cookie flags, timing/length differentials, auth-vs-anon and
+  valid-vs-invalid comparisons) — applied to both recon and exploitation.
+
+## Exploitation depth, safety & Burp
+
+- **+10 exploitation agents.** Absurd-misconfig hunters (exposed `.git`/`.env`/
+  backups, debug/actuator endpoints, default creds, directory listing, exposed
+  ops dashboards, permissive CORS, verbose errors), a **CVE Hunter** (fingerprint
+  → correlate → safe PoC), a **PoC Developer** (writes runnable exploit scripts),
+  and a **Rate-Limit / Anti-Automation** tester.
+- **Data-safety / PII guardrail** injected into every exploit/chain/host prompt:
+  no modifying, deleting, exfiltrating data or changing state without explicit
+  permission; on PII, prove with a single **masked** sample + a count — never
+  dump. When unsure an action is safe, don't do it.
+- **Smart nuclei in recon** — fingerprint first, then run nuclei on **targeted**
+  templates/tags/CVE ids with rate/timeouts (fast, never a blind full scan).
+- **Burp/ZAP proxy** — `/proxy <url>` (or `/burp`, default `:8080`) in the REPL,
+  or the `NEUROSPLOIT_PROXY` env var. Agents route curl through it (`--proxy … -k`)
+  so you can inspect/replay traffic in Burp Suite while the test runs.
+- **PoC workspace** — each run gets a `pocs/` directory (`$NEUROSPLOIT_POCS`);
+  agents save custom, reproducible exploit scripts there and cite them as evidence.
+- **Tool download** (authorized) — agents may `git clone` a specific public PoC/
+  exploit repo or download a scanner when needed (reputable/pinned, reviewed).
+- **Rate-limit testing** is a first-class control check (small non-disruptive
+  burst → look for 429/lockout/Retry-After), never a DoS.
+
+## Multi-role auth & access-control testing
+
+- **Named identities in `creds.yaml`** for IDOR / BOLA / BFLA / privilege-escalation
+  testing. Define two or more roles and the agent authenticates as each and tests
+  **cross-role access** (control vs unauthorized request):
+  ```yaml
+  admin:
+    jwt: eyJ...              # or header:/cookie:/apikey:/login+username+password
+  user:
+    apikey: abc123          # → X-Api-Key: abc123
+  victim:
+    cookie: "session=..."
+  ```
+  Supported per role: `jwt`, `header` (raw), `cookie`, `apikey`, or a
+  `login`/`username`/`password` self-login. With ≥2 roles the harness injects an
+  access-control directive (capture one role's object IDs/functions, attempt them
+  as another role, prove authorized-vs-denied) under the data-safety guardrail.
+
+## Attribution & identification (anti-plagiarism)
+
+- **Identifying User-Agent** on every request — default
+  `NeuroSploit/<ver> (authorized security assessment; +github…)`, plus an
+  `X-NeuroSploit-Scan` header. Change it with **`/ua <string>`** (REPL) or the
+  `NEUROSPLOIT_UA` env var; the run banner shows it.
+- **Attribution stamped into every finding** ("Identified and validated by
+  NeuroSploit — multi-model adversarial validation …") so provenance travels with
+  the finding across the report, `findings.json` and any copy — in the traffic,
+  the finding text, and the report footer, so the work can't be silently re-badged.
+
+## Notes
+
+- Additive/back-compatible. Provider count is 14 (Azure OpenAI added in v3.5.2).
+  See the README "Cloud credentials" section for a full `creds.yaml` example.
+
+---
+
+# NeuroSploit v3.5.4 — Release Notes
+
+**Release Date:** July 2026
+**Codename:** Robust Attack Chaining & False-Positive Reduction
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+v3.5.4 makes NeuroSploit both **deeper** and **more precise**: a real multi-round
+**post-exploitation attack-chaining** engine that expands each foothold in new
+directions, plus stronger **false-positive** controls so what it reports is
+trustworthy.
+
+## Attack chaining (robust, decision-driven)
+
+Replaces the old single-shot chainer with **`attack_chain()`** — an iterative,
+per-foothold pivot engine:
+
+- **Per-foothold decisions.** Each round takes the newest confirmed footholds
+  (best-first, capped per round) and, for **each one**, an agent decides which
+  directions to expand and proves new impact: **post-exploitation** (loot
+  creds/keys/config/source), **credential reuse**, **privilege escalation**
+  (horizontal & vertical), **lateral movement** to adjacent services/hosts,
+  **data exfiltration**, and **new attack surface** the foothold exposes.
+- **Loot carried forward.** Credentials/tokens/hosts/endpoints discovered in one
+  round are passed to later rounds and reused (agent returns
+  `{"findings":[...],"loot":[...]}`), so the engine genuinely pivots in new
+  directions instead of re-testing the same spot.
+- **No pivoting off false positives.** Each round's new findings are validated
+  before they become the next round's footholds.
+- **Convergence.** Runs up to `chain_depth` rounds **or** stops when a round finds
+  nothing new (loop-until-dry).
+- **Control.** New `RunConfig.chain_depth` (default **2**) and a `--chain-depth`
+  flag on every engagement command (`0` disables).
+
+## False-positive reduction
+
+- **Robust verdict parsing** (`pool::parse_verdict`) — whitespace-insensitive,
+  checks explicit rejection first, counts only explicit confirmations; ambiguous
+  replies are *not* counted as confirmed. Replaces the fragile exact-JSON /
+  loose-`yes` matching.
+- **Severity-aware quorum** (`pool::quorum_confirmed`) — **High/Critical now need
+  ≥2 validators AND ≥2/3 agreement** (a single vote can no longer confirm a
+  Critical); lower severities need a strict majority. Single-model panels fall
+  back to majority so they aren't nuked.
+- **Adversarial refute pass** — every confirmed High/Critical is re-examined by a
+  skeptical panel that assumes false-positive; findings that can't withstand a
+  majority of skeptics are dropped.
+- **Stronger validator prompt** with an explicit false-positive checklist
+  (reflected-not-executed, version/banner guesses, self-XSS, error-as-injection,
+  thin evidence, inflated severity).
+
+## Notes
+
+- Additive and back-compatible; defaults keep behavior sensible if you change
+  nothing. Unit tests cover verdict parsing, quorum, and report-hygiene logic.
+
+---
+
+# NeuroSploit v3.5.3 — Release Notes
+
+**Release Date:** June 2026
+**Codename:** Integrations (GitHub · GitLab · Jira)
+**License:** MIT
+**Credits:** Joas A Santos & Red Team Leaders
+
+---
+
+## TL;DR
+
+v3.5.3 plugs NeuroSploit into your SDLC: review **private** GitHub/GitLab repos
+and **Pull Requests**, **watch** a branch and re-review on every commit, and open
+a **Jira card per finding** — all toggleable via a new `/integrations` command.
+
+## Highlights
+
+- **GitHub integration**
+  - **Private repos**: when enabled, `whitebox` / `greybox --repo` / `tui --repo`
+    inject your `GITHUB_TOKEN` into the clone URL (token never printed/stored).
+  - **`neurosploit pr <owner/repo> <number>`** — clones the **PR head**
+    (`refs/pull/N/head`), runs a white-box review, optionally **posts a summary
+    comment** back on the PR (`--comment`) and/or **opens Jira cards** (`--jira`).
+  - **`neurosploit watch <owner/repo> --branch <b> --interval <s>`** — polls the
+    branch and runs a white-box review **each time a new commit lands**.
+- **GitLab integration** — private clone (token-injected) for `whitebox`/`greybox`
+  against `gitlab.com` or a self-hosted base.
+- **Jira integration** — `--jira` on any engagement (or `pr`/`watch`) opens **one
+  card per finding** (summary, severity, CVSS, CWE, location, PoC, evidence,
+  remediation) in your project via the Jira REST API.
+- **`/integrations` (REPL) + `neurosploit integrations` (CLI)** — `show`,
+  `enable`/`disable <github|gitlab|jira>`, and `setup <jira|gitlab|github>`
+  (interactive). Config persists to `<project>/.neurosploit/integrations.json`.
+  **Secrets are never stored** — only the env-var *name* is saved; values come
+  from the environment at use time.
+- New harness module `integrations` + app commands `pr` / `watch` /
+  `integrations`, plus a `--jira` flag on `run` / `whitebox`.
+
+## Setup
+
+Step-by-step for tokens, scopes and configuration is in
+**[TUTORIAL-INTEGRATION.md](TUTORIAL-INTEGRATION.md)** and summarized in the README.
+
+## Notes
+
+- Additive and back-compatible: all existing modes/flags are unchanged; if no
+  integration is enabled the behavior is identical to v3.5.2.
+- Tokens use env vars: `GITHUB_TOKEN`, `GITLAB_TOKEN`, `JIRA_EMAIL` +
+  `JIRA_API_TOKEN` (names configurable per integration).
+
+---
+
 # NeuroSploit v3.5.2 — Release Notes
 
 **Release Date:** June 2026
@@ -47,6 +291,23 @@ and severity-calibrated).
 - **5 new doctrine meta-agents** (`agents_md/meta/`): `exploit_depth_doctrine`,
   `finding_chainer`, `artifact_decoder`, `token_auditor`, `report_calibrator`
   (meta agents 17 → 22; total library 343 → 348).
+- **Source from a GitHub URL.** `whitebox` / `greybox --repo` (and the REPL
+  `/repo`) now accept a **git URL** (`https://github.com/owner/repo[.git]`) or an
+  `owner/repo` shorthand — the repo is cloned (shallow) into `<base>/repos/` and
+  reviewed automatically, no manual `git clone` needed:
+  ```bash
+  neurosploit whitebox https://github.com/digininja/DVWA \
+    --subscription --model anthropic:claude-opus-4-8 -v
+  ```
+- **Azure OpenAI provider** (resolves #21). OpenAI-compatible: set
+  `AZURE_OPENAI_ENDPOINT` (+ optional `AZURE_OPENAI_API_VERSION`, default
+  `2024-10-21`) and `AZURE_OPENAI_API_KEY`, then `--model azure:<deployment>`
+  (the model name is your Azure *deployment* name; auth via the `api-key`
+  header).
+- **`GOOGLE_API_KEY` alias for Gemini** (resolves #25 confusion). Gemini's API
+  path reads `GEMINI_API_KEY`, and now also accepts `GOOGLE_API_KEY` (Google's
+  standard env var) when the former is unset. Local providers (ollama/litellm)
+  still need **no** key at all.
 
 ## Notes
 

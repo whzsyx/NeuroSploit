@@ -1,4 +1,4 @@
-<h1 align="center">🧠 NeuroSploit v3.5.2</h1>
+<h1 align="center">🧠 NeuroSploit v3.5.5</h1>
 
 <p align="center">
   <a href="https://github.com/JoasASantos/NeuroSploit/stargazers"><img src="https://img.shields.io/github/stars/JoasASantos/NeuroSploit?style=for-the-badge&logo=github&color=8b5cf6" alt="Stars"></a>
@@ -8,11 +8,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-3.5.2-blue?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-3.5.5-blue?style=flat-square">
   <img src="https://img.shields.io/badge/Harness-Rust%20%7C%20tokio-e6b673?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green?style=flat-square">
-  <img src="https://img.shields.io/badge/MD%20Agents-329-red?style=flat-square">
-  <img src="https://img.shields.io/badge/Models-12%20providers-success?style=flat-square">
+  <img src="https://img.shields.io/badge/MD%20Agents-375-red?style=flat-square">
+  <img src="https://img.shields.io/badge/Models-14%20providers-success?style=flat-square">
   <img src="https://img.shields.io/badge/Modes-Black%20%7C%20White%20%7C%20Grey%20%7C%20Host-9cf?style=flat-square">
   <img src="https://img.shields.io/badge/Auth-API%20key%20%7C%20Subscription-orange?style=flat-square">
 </p>
@@ -24,12 +24,17 @@
 >
 > 📖 **New here? Read the [full Tutorial & User Guide →](TUTORIAL.md)** — every mode, flag, config and example explained.
 
-> 🆕 **New in v3.5.2 — Exploitation Depth & Report Hygiene:** a **DEPTH doctrine**
-> makes the engine *use* what it finds (exposed → exploited), **chain** findings
-> across modules, decode/fingerprint artifacts → CVEs, and **audit tokens** (JWT
-> alg-confusion / weak HS256 secrets). A deterministic post-pass **calibrates
-> severity to proven impact** and **consolidates duplicated hygiene** findings.
-> See [RELEASE.md](RELEASE.md).
+> 🆕 **New in v3.5.5 — Cloud testing + REPL navigation + deeper recon:**
+> **AWS/GCP/Azure** agents (+17 → **375** total) with credentials wired through
+> `creds.yaml`; a more navigable **REPL** — **`/timeout`** idle guardrail,
+> **multi-target** `/target a,b,c` (sequential), an interactive **`/results`**
+> browser (target → vuln → detail, Esc to go back) and **`/report`** picker; and
+> **deeper recon** that downloads & analyzes JavaScript (endpoints, secrets,
+> source maps) and does request/response differential analysis. Interactive
+> line-editing prompt bug fixed.
+> *(v3.5.4 added robust attack chaining + false-positive reduction; v3.5.3
+> GitHub/GitLab/Jira **[integrations](TUTORIAL-INTEGRATION.md)**; v3.5.2 the DEPTH
+> doctrine + report-hygiene — see [RELEASE.md](RELEASE.md).)*
 
 ---
 
@@ -39,7 +44,7 @@ LLMs** — via **API key** or local **subscription** (Claude Code / Codex / Gemi
 Grok) — recons the target, **intelligently selects only the agents that match the
 discovered surface**, runs them in parallel, **chains** findings into deeper
 impact, and **validates every claim by cross-model voting + tool-receipt
-grounding** before reporting. It ships **329 markdown agents** and a **Mission
+grounding** before reporting. It ships **375 markdown agents** and a **Mission
 Control TUI**.
 
 ### Engagement modes
@@ -49,7 +54,7 @@ Control TUI**.
 | **Black-box** | `neurosploit run <url>` | recon → select → exploit → vote → report |
 | **White-box** | `neurosploit whitebox <repo>` | source/SAST review (file:line evidence) |
 | **Grey-box** | `neurosploit greybox <repo> --url <app>` | code review **+** live exploitation together |
-| **Host/Infra** | `neurosploit host <ip> --creds creds.yaml` | Linux / Windows / Active Directory testing |
+| **Host/Infra** | `neurosploit host <ip> --creds creds.yaml` | Linux / Windows / AD **and cloud** (AWS/GCP/Azure) testing |
 | **Mission Control** | `neurosploit tui <url>` | live TUI panels + composer during the run |
 | **Interactive** | `neurosploit` | persistent REPL session (resumes per project) |
 
@@ -66,6 +71,18 @@ Control TUI**.
 - 🔗 **Attack chaining** — 12 multi-stage chain agents (SQLi→RCE→LPE, SSRF→AWS
   creds, upload→LFI→RCE→LPE, default-creds→domain, …); each stage proven before
   advancing.
+- ☁️ **Cloud testing** — AWS / GCP / Azure agents that drive the provider CLIs
+  (`aws`/`gcloud`/`az`). Connect via `creds.yaml`: AWS keys, a Google
+  service-account JSON, or an Azure service principal — see
+  [Cloud credentials](#cloud-credentials-awsgcpazure).
+- 🧰 **Misconfig & CVE hunting, safely** — dedicated agents for absurd
+  misconfigs (exposed `.git`/`.env`, debug/actuator, default creds, dashboards,
+  CORS), a **CVE Hunter** (smart, targeted `nuclei`), a **PoC Developer** (writes
+  reproducible scripts to the run's `pocs/`), and **rate-limit** testing — all
+  under a strict **data-safety/PII guardrail** (no destructive or state-changing
+  actions; PII proven with a masked sample, never dumped).
+- 🕵️ **Burp/ZAP proxy** — `/proxy <url>` (or `/burp`) routes agent traffic
+  through your local intercepting proxy so you can inspect & replay in Burp.
 - 🗺️ **Attack graph & kill chain** — findings mapped to OWASP / CWE / MITRE
   ATT&CK / stage; rendered as a Mermaid graph in the report.
 - ✅ **Cross-model validation** — a different model adjudicates each finding;
@@ -146,6 +163,116 @@ neurosploit tui http://testphp.vulnweb.com/ --subscription --model anthropic:cla
 > Full step-by-step for every mode (black/white/grey/host) is in **[TUTORIAL.md](TUTORIAL.md)**.
 
 No login? Use an **API key** instead — see [Authentication](#authentication--run-via-api-key-or-subscription).
+
+---
+
+## 🔌 Integrations (GitHub · GitLab · Jira)
+
+Wire NeuroSploit into your SDLC. Toggle from the REPL (`/integrations`) or the CLI
+(`neurosploit integrations enable github|gitlab|jira`). **Tokens are never stored**
+— only the *name* of the env var is saved; the value is read from your environment.
+
+```bash
+export GITHUB_TOKEN=ghp_...                 # PAT with `repo` scope (private repos)
+neurosploit integrations enable github
+
+# Review a Pull Request's code (clones the PR head, white-box) and comment back:
+neurosploit pr digininja/DVWA 42 --subscription --model anthropic:claude-opus-4-8 --comment
+
+# Watch a branch and re-review on every new commit:
+neurosploit watch myorg/private-app --branch main --subscription --model anthropic:claude-opus-4-8
+
+# Private GitLab repo (token-injected clone) — works in whitebox/greybox:
+export GITLAB_TOKEN=glpat-... ; neurosploit integrations enable gitlab
+neurosploit whitebox https://gitlab.com/myorg/private-svc --subscription --model anthropic:claude-opus-4-8
+
+# Open a Jira card per finding (any engagement):
+export JIRA_EMAIL=you@org.com JIRA_API_TOKEN=...      # set base/project once: /integrations setup jira
+neurosploit whitebox https://github.com/myorg/app --jira --subscription --model anthropic:claude-opus-4-8
+```
+
+| Integration | What you get | Env vars |
+|-------------|--------------|----------|
+| **GitHub** | private clone · `pr` review + comment · `watch` branch | `GITHUB_TOKEN` |
+| **GitLab** | private clone for whitebox/greybox | `GITLAB_TOKEN` |
+| **Jira** | one card per finding (`--jira`) | `JIRA_EMAIL`, `JIRA_API_TOKEN` |
+
+📖 Step-by-step setup for each tool: **[TUTORIAL-INTEGRATION.md](TUTORIAL-INTEGRATION.md)**.
+
+---
+
+## ☁️ Cloud credentials (AWS/GCP/Azure)
+
+Add a cloud block to `creds.yaml` and the harness exports the right env vars so
+the AWS/GCP/Azure agents can drive `aws` / `gcloud` / `az`. Secrets stay in your
+file/secret-manager; agents do **read-only enumeration first, never destructive**.
+
+```yaml
+# --- AWS: static keys (or a named profile) ---
+aws:
+  access_key_id: AKIA...
+  secret_access_key: ...
+  # session_token: ...        # if using temporary creds
+  region: us-east-1
+  # profile: my-sso-profile   # alternative to keys
+
+# --- GCP: service-account JSON (path recommended; inline single-line also works) ---
+gcp:
+  service_account_json: /path/to/sa.json
+  project: my-project-id
+
+# --- Azure: service principal (recommended for automation) ---
+azure:
+  tenant_id: ...
+  client_id: ...
+  client_secret: ...
+  subscription_id: ...
+```
+
+```bash
+neurosploit host my-cloud-account --creds creds.yaml \
+  --subscription --model anthropic:claude-opus-4-8 -v
+```
+
+Agents cover IAM privilege-escalation, storage exposure (S3/GCS/Blob), compute &
+network exposure, secrets (Secrets Manager / Secret Manager / Key Vault),
+service-account/SP abuse, and identity enumeration (Entra ID). Best-practice
+auth: **AWS** access keys or profile; **GCP** a service-account JSON
+(`GOOGLE_APPLICATION_CREDENTIALS`); **Azure** a service principal
+(`az login --service-principal`).
+
+---
+
+## 👥 Multiple identities — access-control testing (IDOR / BOLA / BFLA)
+
+Give NeuroSploit two or more **named roles** in `creds.yaml` and it authenticates
+as each and tests **cross-role** access (a low-priv role reaching another user's
+object or an admin function is a finding):
+
+```yaml
+admin:
+  jwt: eyJ...                 # per role: jwt | header (raw) | cookie | apikey | login+username+password
+user:
+  apikey: abc123              # → X-Api-Key: abc123
+victim:
+  cookie: "session=deadbeef"
+```
+
+```bash
+neurosploit run https://app.example --creds creds.yaml \
+  --subscription --model anthropic:claude-opus-4-8 -v
+```
+
+Each finding is proven with the **authorized vs unauthorized** request pair, under
+the data-safety guardrail (read-only, PII masked).
+
+## 🏷️ Identification & attribution (anti-plagiarism)
+
+Every request is tagged with an identifying **User-Agent** (default
+`NeuroSploit/<ver> …`, change with **`/ua`** or `NEUROSPLOIT_UA`) plus an
+`X-NeuroSploit-Scan` header, and every finding is **stamped** "Identified and
+validated by NeuroSploit" — so provenance travels in the traffic, the finding
+text, `findings.json` and the report footer.
 
 ---
 

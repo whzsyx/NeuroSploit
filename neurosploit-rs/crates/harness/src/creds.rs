@@ -51,6 +51,67 @@ pub struct Win {
     pub hash: String,   // NTLM hash for pass-the-hash (LM:NT or NT)
 }
 
+/// Cloud provider credentials for cloud-infra testing (AWS / GCP / Azure).
+/// Secrets are read from `creds.yaml` and exported to the process environment so
+/// the `aws` / `gcloud` / `az` CLIs the agents use pick them up automatically.
+#[derive(Default, Debug, Clone)]
+pub struct Cloud {
+    // AWS — static keys (access key + secret [+ session token]) OR a named profile.
+    pub aws_access_key_id: String,
+    pub aws_secret_access_key: String,
+    pub aws_session_token: String,
+    pub aws_region: String,
+    pub aws_profile: String,
+    // GCP — a service-account JSON (path, recommended) or inline single-line JSON.
+    pub gcp_sa_json: String,
+    pub gcp_project: String,
+    // Azure — a service principal (recommended for non-interactive automation).
+    pub azure_tenant_id: String,
+    pub azure_client_id: String,
+    pub azure_client_secret: String,
+    pub azure_subscription_id: String,
+}
+
+impl Cloud {
+    fn is_empty(&self) -> bool {
+        self.aws_access_key_id.is_empty() && self.aws_profile.is_empty()
+            && self.gcp_sa_json.is_empty()
+            && self.azure_client_id.is_empty()
+    }
+}
+
+/// A named identity/role for multi-user access-control testing (IDOR / BOLA /
+/// BFLA / privilege escalation). Each carries ONE way to authenticate.
+#[derive(Default, Debug, Clone)]
+pub struct Identity {
+    pub name: String,             // e.g. "admin", "user", "victim"
+    pub jwt: String,              // → Authorization: Bearer <jwt>
+    pub header: String,           // raw header, e.g. "X-Api-Key: abc"
+    pub cookie: String,           // → Cookie: <cookie>
+    pub apikey: String,           // → X-Api-Key: <apikey> (unless it contains ':')
+    pub login_url: String,        // login endpoint (agent authenticates itself)
+    pub username: String,
+    pub password: String,
+}
+
+impl Identity {
+    /// The ready-to-send auth header for this identity, if it has direct material.
+    pub fn header_line(&self) -> Option<String> {
+        if !self.header.is_empty() { return Some(self.header.clone()); }
+        if !self.jwt.is_empty() { return Some(format!("Authorization: Bearer {}", self.jwt)); }
+        if !self.apikey.is_empty() {
+            return Some(if self.apikey.contains(':') { self.apikey.clone() } else { format!("X-Api-Key: {}", self.apikey) });
+        }
+        if !self.cookie.is_empty() { return Some(format!("Cookie: {}", self.cookie)); }
+        None
+    }
+    fn describe(&self) -> String {
+        if let Some(h) = self.header_line() { format!("{} → send `{}`", self.name, h) }
+        else if !self.login_url.is_empty() { format!("{} → log in at {} as {}:{} and reuse the session", self.name, self.login_url, self.username, self.password) }
+        else { format!("{} → (no usable credential)", self.name) }
+    }
+}
+
 #[derive(Default, Debug, Clone)]
 pub struct Creds {
     pub jwt: Option<String>,
@@ -59,6 +120,9 @@ pub struct Creds {
     pub login: Option<Login>,
     pub ssh: Option<Ssh>,
     pub win: Option<Win>,
+    pub cloud: Option<Cloud>,
+    /// Named identities for multi-role access-control testing.
+    pub roles: Vec<Identity>,
 }
 
 impl Creds {
@@ -68,8 +132,11 @@ impl Creds {
         let mut login = Login { method: "POST".into(), ..Default::default() };
         let mut ssh = Ssh { port: "22".into(), ..Default::default() };
         let mut win = Win::default();
+        let mut cloud = Cloud::default();
         let (mut have_login, mut have_ssh, mut have_win) = (false, false, false);
-        let mut block = ""; // "", "login", "ssh", "windows"
+        let mut roles: Vec<Identity> = Vec::new();
+        let mut cur_role = 0usize;
+        let mut block = ""; // "", "login", "ssh", "windows", "aws", "gcp", "azure", "role"
         for raw in text.lines() {
             let line = raw.split('#').next().unwrap_or("");
             if line.trim().is_empty() {
@@ -86,7 +153,12 @@ impl Creds {
                     "login" => { have_login = true; "login" }
                     "ssh" => { have_ssh = true; "ssh" }
                     "windows" | "win" | "ad" => { have_win = true; "windows" }
-                    _ => "",
+                    "aws" => "aws",
+                    "gcp" | "google" | "gcloud" => "gcp",
+                    "azure" | "az" => "azure",
+                    "roles" | "identities" | "users" => "", // optional wrapper — ignore
+                    // Any other named block is a role/identity for access-control testing.
+                    other => { roles.push(Identity { name: other.to_string(), ..Default::default() }); cur_role = roles.len() - 1; "role" }
                 };
                 continue;
             }
@@ -118,6 +190,38 @@ impl Creds {
                         "hash" | "ntlm" => win.hash = v,
                         _ => {}
                     },
+                    "aws" => match k.as_str() {
+                        "access_key_id" | "access_key" | "key" => cloud.aws_access_key_id = v,
+                        "secret_access_key" | "secret" => cloud.aws_secret_access_key = v,
+                        "session_token" | "token" => cloud.aws_session_token = v,
+                        "region" => cloud.aws_region = v,
+                        "profile" => cloud.aws_profile = v,
+                        _ => {}
+                    },
+                    "gcp" => match k.as_str() {
+                        "service_account_json" | "sa_json" | "key" | "keyfile" | "credentials" => cloud.gcp_sa_json = v,
+                        "project" | "project_id" => cloud.gcp_project = v,
+                        _ => {}
+                    },
+                    "azure" => match k.as_str() {
+                        "tenant_id" | "tenant" => cloud.azure_tenant_id = v,
+                        "client_id" | "app_id" => cloud.azure_client_id = v,
+                        "client_secret" | "secret" | "password" => cloud.azure_client_secret = v,
+                        "subscription_id" | "subscription" => cloud.azure_subscription_id = v,
+                        _ => {}
+                    },
+                    "role" => if let Some(r) = roles.get_mut(cur_role) {
+                        match k.as_str() {
+                            "jwt" | "token" => r.jwt = v,
+                            "header" => r.header = v,
+                            "cookie" => r.cookie = v,
+                            "apikey" | "api_key" | "key" => r.apikey = v,
+                            "login" | "url" | "login_url" => r.login_url = v,
+                            "username" | "user" => r.username = v,
+                            "password" | "pass" => r.password = v,
+                            _ => {}
+                        }
+                    },
                     _ => {}
                 }
                 continue;
@@ -133,11 +237,102 @@ impl Creds {
         if have_login && !login.url.is_empty() { c.login = Some(login); }
         if have_ssh && !ssh.host.is_empty() { c.ssh = Some(ssh); }
         if have_win && !win.host.is_empty() { c.win = Some(win); }
+        if !cloud.is_empty() { c.cloud = Some(cloud); }
+        roles.retain(|r| r.header_line().is_some() || !r.login_url.is_empty());
+        c.roles = roles;
         if c.jwt.is_none() && c.header.is_none() && c.cookie.is_none()
-            && c.login.is_none() && c.ssh.is_none() && c.win.is_none() {
+            && c.login.is_none() && c.ssh.is_none() && c.win.is_none() && c.cloud.is_none()
+            && c.roles.is_empty() {
             return None;
         }
         Some(c)
+    }
+
+    /// Multi-role access-control testing directive: lists every identity and
+    /// instructs the agent to test cross-role access (IDOR/BOLA, BFLA, privesc)
+    /// by acting as each role against the others' objects and functions.
+    pub fn roles_instruction(&self) -> Option<String> {
+        if self.roles.len() < 2 { return None; }
+        let list = self.roles.iter().map(|r| format!("  - {}", r.describe())).collect::<Vec<_>>().join("\n");
+        Some(format!(
+            "MULTI-ROLE ACCESS CONTROL — you have {} identities:\n{list}\n\
+             Authenticate as EACH identity (use its header on every request, or log in first for a login: role and \
+             reuse the session). Then test broken access control across roles:\n\
+             - BOLA/IDOR: as a low-privilege role, capture your own object IDs, then try to READ/UPDATE another \
+               role's objects by their IDs; a low-priv role reaching a high-priv/other-user object is a finding.\n\
+             - BFLA: call admin-only functions/endpoints/HTTP methods with a low-privilege role's session.\n\
+             - Privilege escalation: mass-assignment of role/permission fields, or reaching admin routes.\n\
+             Always compare against the control (the authorized role should succeed; the unauthorized role should be \
+             denied). Prove each with the two requests (authorized vs unauthorized) and their responses. Respect data \
+             safety — read-only proof, mask any PII.\n",
+            self.roles.len()))
+    }
+
+    /// Environment variables to export so the `aws`/`gcloud`/`az` CLIs the agents
+    /// run pick up the cloud credentials automatically. For inline GCP JSON the
+    /// content is written to a temp file and that path is returned.
+    pub fn cloud_env(&self) -> Vec<(String, String)> {
+        let mut e: Vec<(String, String)> = Vec::new();
+        let Some(c) = &self.cloud else { return e };
+        // AWS
+        if !c.aws_access_key_id.is_empty() {
+            e.push(("AWS_ACCESS_KEY_ID".into(), c.aws_access_key_id.clone()));
+            e.push(("AWS_SECRET_ACCESS_KEY".into(), c.aws_secret_access_key.clone()));
+            if !c.aws_session_token.is_empty() {
+                e.push(("AWS_SESSION_TOKEN".into(), c.aws_session_token.clone()));
+            }
+        }
+        if !c.aws_profile.is_empty() { e.push(("AWS_PROFILE".into(), c.aws_profile.clone())); }
+        if !c.aws_region.is_empty() {
+            e.push(("AWS_DEFAULT_REGION".into(), c.aws_region.clone()));
+            e.push(("AWS_REGION".into(), c.aws_region.clone()));
+        }
+        // GCP — path (recommended) or inline JSON written to a temp file.
+        if !c.gcp_sa_json.is_empty() {
+            let path = if c.gcp_sa_json.trim_start().starts_with('{') {
+                let p = std::env::temp_dir().join("neurosploit-gcp-sa.json");
+                let _ = std::fs::write(&p, c.gcp_sa_json.as_bytes());
+                p.display().to_string()
+            } else {
+                c.gcp_sa_json.clone()
+            };
+            e.push(("GOOGLE_APPLICATION_CREDENTIALS".into(), path));
+        }
+        if !c.gcp_project.is_empty() {
+            e.push(("GOOGLE_CLOUD_PROJECT".into(), c.gcp_project.clone()));
+            e.push(("CLOUDSDK_CORE_PROJECT".into(), c.gcp_project.clone()));
+        }
+        // Azure — service principal env (consumed by `az login --service-principal`).
+        if !c.azure_tenant_id.is_empty() { e.push(("AZURE_TENANT_ID".into(), c.azure_tenant_id.clone())); }
+        if !c.azure_client_id.is_empty() { e.push(("AZURE_CLIENT_ID".into(), c.azure_client_id.clone())); }
+        if !c.azure_client_secret.is_empty() { e.push(("AZURE_CLIENT_SECRET".into(), c.azure_client_secret.clone())); }
+        if !c.azure_subscription_id.is_empty() {
+            e.push(("AZURE_SUBSCRIPTION_ID".into(), c.azure_subscription_id.clone()));
+            e.push(("ARM_SUBSCRIPTION_ID".into(), c.azure_subscription_id.clone()));
+        }
+        e
+    }
+
+    /// A directive telling the agents which cloud creds are available and how to
+    /// authenticate the provider CLI, so they enumerate/test the cloud account.
+    pub fn cloud_instruction(&self) -> Option<String> {
+        let c = self.cloud.as_ref()?;
+        let mut s = String::new();
+        if !c.aws_access_key_id.is_empty() || !c.aws_profile.is_empty() {
+            s.push_str(&format!(
+                "AWS ACCESS: credentials are set in the environment{}. Use the `aws` CLI to enumerate and test the account — start with `aws sts get-caller-identity`, then IAM (users/roles/policies, privilege escalation paths), S3 (public/misconfigured buckets), EC2/SG, Lambda, Secrets Manager. Read-only enumeration first; never destructive.\n",
+                if c.aws_region.is_empty() { String::new() } else { format!(" (region {})", c.aws_region) }));
+        }
+        if !c.gcp_sa_json.is_empty() {
+            s.push_str(&format!(
+                "GCP ACCESS: a service account is available via $GOOGLE_APPLICATION_CREDENTIALS{}. Run `gcloud auth activate-service-account --key-file=$GOOGLE_APPLICATION_CREDENTIALS` first, then enumerate with `gcloud`/`gsutil` — IAM bindings & privilege escalation, buckets, compute, service accounts/keys, Cloud Functions.\n",
+                if c.gcp_project.is_empty() { String::new() } else { format!(" (project {})", c.gcp_project) }));
+        }
+        if !c.azure_client_id.is_empty() {
+            s.push_str(
+                "AZURE ACCESS: a service principal is set in the environment. Authenticate with `az login --service-principal -u $AZURE_CLIENT_ID -p $AZURE_CLIENT_SECRET --tenant $AZURE_TENANT_ID`, then enumerate with `az` — role assignments (RBAC) & escalation, storage accounts/containers, VMs, Key Vaults, managed identities.\n");
+        }
+        if s.is_empty() { None } else { Some(s) }
     }
 
     /// A directive describing the host credentials available to the agents, so

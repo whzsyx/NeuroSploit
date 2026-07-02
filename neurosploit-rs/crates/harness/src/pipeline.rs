@@ -22,7 +22,13 @@ pub struct RunOutput {
     pub artifacts: Vec<String>,
 }
 
-const RECON_SYS: &str = "You are a web recon specialist on an AUTHORIZED engagement. You have shell tools (curl etc.) — actively fetch the target, enumerate pages/params, and map the real attack surface. Do not ask for permission; proceed. Reply with a compact JSON object (tech, endpoints, params, auth, apis). No prose.";
+const RECON_SYS: &str = "You are an elite web recon specialist on an AUTHORIZED engagement. Actively fetch the target with your tools and map the REAL attack surface in DEPTH — do not ask for permission, proceed:\n\
+- Crawl pages, forms and parameters; record every input, header, cookie and redirect.\n\
+- DOWNLOAD the linked JavaScript bundles (curl each script) and ANALYZE them: extract API endpoints/routes, hidden/undocumented parameters, GraphQL operations, secrets / API keys / tokens, cloud & third-party URLs, feature flags, and `sourceMappingURL` references (fetch source maps if exposed to recover original source).\n\
+- Fingerprint the tech stack and EXACT versions (server, framework, libraries, CMS, JS libs) from headers, HTML, asset paths and JS.\n\
+- Analyze responses deeply: status codes, ALL headers, Set-Cookie flags, verbose errors/stack traces, content types, and length/timing differentials.\n\
+- Map auth (cookie/JWT/OAuth), APIs (REST & GraphQL), and any dev/staging/internal hosts referenced anywhere.\n\
+Base everything on real observed responses — never assume. Reply with a COMPACT JSON object with keys {tech, versions, endpoints, params, apis, auth, js_findings, secrets, hosts, notes}. No prose.";
 
 /// Operator directives (focus instructions + auth material) prepended to
 /// recon/exploit prompts so the engagement is steered as the user asked.
@@ -51,16 +57,112 @@ fn tool_doctrine(mcp_on: bool) -> String {
     };
     format!(
         "TOOLING (authorized; best on Kali Linux or the kalilinux/kali-rolling Docker image):\n\
-         - HTTP: `curl` (headers, methods, params, cookies), `wget`.\n\
+         - HTTP: `curl` (dump ALL response headers with -i/-D-, follow/inspect redirects, set methods/params/cookies), `wget`.\n\
          - Ports/services: `rustscan` if present, else `nmap`; if neither is installed you may \
            install via apt (`apt install -y nmap`), brew, or cargo (`cargo install rustscan`) — \
            otherwise probe common ports with `curl`/`nc`.\n\
-         - Content/params: `ffuf`, `gobuster`, `gau`, `katana` when available.\n\
+         - Content/params/URLs: `ffuf`, `gobuster`, `gau`, `katana`, `waybackurls`, `linkfinder` when available.\n\
+         - JS ANALYSIS: download every linked script (`curl -s <script.js>`) and grep it for endpoints/paths, \
+           `fetch(`/`axios`/XHR URLs, API & GraphQL routes, hidden params, and secrets (AKIA…, `api_key`, `token`, \
+           `Bearer `, `authorization`), plus `sourceMappingURL` (fetch the .map to recover original source). \
+           Prefer `linkfinder`/`gau`/`katana` to harvest more URLs when present, else regex with `grep -Eo`.\n\
+         - REQUEST/RESPONSE ANALYSIS: read status codes, every header, Set-Cookie flags, content-type, body length \
+           and response timing; use DIFFERENTIALS (authenticated vs anonymous, valid vs invalid input, existing vs \
+           missing resource) and reflected input / verbose errors to infer behavior and CONFIRM issues with evidence. \
+           Save full request/response pairs when they matter for the PoC.\n\
+         - NUCLEI (fast, targeted — never a blind full scan): first fingerprint the stack, then run nuclei ONLY on \
+           relevant templates, e.g. `nuclei -u <target> -tags <detected-tech,cve> -severity critical,high,medium \
+           -rl 50 -timeout 8 -retries 1` (or `-t <specific-template>` for a suspected CVE). Prefer targeted \
+           `-id`/`-tags` over the whole template set so it stays quick; confirm any hit manually with curl.\n\
+         - MISCONFIG HUNTING: probe for absurd-but-common misconfigurations — exposed `.git`/`.env`/backup & config \
+           files, directory listing, debug/actuator/trace endpoints, default & weak credentials, open admin panels, \
+           permissive CORS, verbose stack traces, exposed dashboards (Kibana/Grafana/Jenkins/phpMyAdmin), and cloud \
+           metadata (169.254.169.254) via SSRF.\n\
+         - RATE-LIMIT / ANTI-AUTOMATION: on auth, password-reset, OTP and sensitive endpoints, send a controlled \
+           burst (e.g. ~20-30 requests) and check for 429/lockout/Retry-After/backoff; report absence as a finding. \
+           Keep bursts small and non-disruptive — this is a control check, not a DoS.\n\
+         - TOOL DOWNLOAD (authorized): when a public PoC or scanner is needed you MAY `git clone` a specific PoC/exploit \
+           repo or download a tool (`git clone`, `wget`, `pip install`, `go install`, `cargo install`) — use pinned, \
+           reputable sources; review before running; never run destructive payloads.\n\
          - {browser}\n\
-         Use only what is installed; degrade gracefully. Never run destructive or DoS actions.\n\n"
+         - {ua}{proxy}{pocs}\
+         Use only what is installed; degrade gracefully. Never run destructive or DoS actions.\n\n",
+        ua = ua_line(),
+        proxy = proxy_line(),
+        pocs = pocs_line(),
     )
 }
-const VOTE_SYS: &str = "You are an adversarial security validator. Decide if the candidate finding is a REAL, reproducible, exploitable vulnerability with proof. Reply with JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}. Default to rejected when uncertain.";
+
+/// Default identifying User-Agent so target owners (and the operator) can tell
+/// traffic came from NeuroSploit — and so authorship of a scan is unambiguous.
+pub fn default_user_agent() -> String {
+    format!("NeuroSploit/{} (authorized security assessment; +https://github.com/JoasASantos/NeuroSploit)",
+        env!("CARGO_PKG_VERSION"))
+}
+
+/// Identify NeuroSploit traffic at the request layer (User-Agent + a marker
+/// header). Overridable via `NEUROSPLOIT_UA`.
+fn ua_line() -> String {
+    let ua = std::env::var("NEUROSPLOIT_UA").ok().filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(default_user_agent);
+    format!(
+        "IDENTIFY (attribution — do NOT strip): tag every HTTP request as NeuroSploit so the scan is \
+         attributable — add `-A \"{ua}\"` (User-Agent) AND `-H \"X-NeuroSploit-Scan: {}\"` to curl. Only omit \
+         when a specific test requires a different/absent User-Agent.\n         ",
+        env!("CARGO_PKG_VERSION"))
+}
+
+/// Attribution stamped into every finding's impact so the provenance travels
+/// with the finding across the report, findings.json and any copy — making it
+/// hard to silently re-badge NeuroSploit's output as someone else's work.
+const ATTRIBUTION: &str = "Identified and validated by NeuroSploit (multi-model adversarial validation) — https://github.com/JoasASantos/NeuroSploit · by Joas A Santos & Red Team Leaders.";
+
+/// Append the NeuroSploit attribution to each finding's impact (idempotent).
+pub fn stamp_attribution(findings: &mut [Finding]) {
+    for f in findings.iter_mut() {
+        if !f.impact.contains("Identified and validated by NeuroSploit") {
+            let sep = if f.impact.trim().is_empty() { "" } else { "\n\n" };
+            f.impact = format!("{}{sep}{ATTRIBUTION}", f.impact.trim_end());
+        }
+    }
+}
+
+/// If a local proxy is configured (Burp/ZAP), tell agents to route HTTP through
+/// it so the operator can inspect/replay traffic in Burp Suite.
+fn proxy_line() -> String {
+    match std::env::var("NEUROSPLOIT_PROXY").ok().filter(|v| !v.trim().is_empty()) {
+        Some(p) => format!(
+            "PROXY: route ALL HTTP through the local intercepting proxy at {p} (Burp/ZAP) so the operator can \
+             inspect & replay in Burp — add `--proxy {p} -k` to every curl (and set http(s)_proxy for other tools). \
+             Send anything noteworthy through it for manual review.\n         "),
+        None => String::new(),
+    }
+}
+
+/// If a PoC directory is set, tell agents to save custom exploit scripts there.
+fn pocs_line() -> String {
+    match std::env::var("NEUROSPLOIT_POCS").ok().filter(|v| !v.trim().is_empty()) {
+        Some(d) => format!(
+            "POCS: when an issue needs a custom multi-step exploit/script to prove it, WRITE a runnable PoC \
+             (curl/python/bash) to {d}/ with a short header comment (target, what it proves, usage), run it to \
+             confirm, and reference the file path in the finding evidence.\n         "),
+        None => String::new(),
+    }
+}
+
+/// Data-safety guardrail prepended to every exploit/chain prompt.
+const SAFETY_DOCTRINE: &str = "DATA SAFETY (strict): prove impact WITHOUT harming data. Do NOT modify, delete, \
+overwrite, encrypt or exfiltrate data, create/alter/escalate accounts, or change configuration/state — unless the \
+operator has explicitly authorized that specific action. Read-only, minimal proof. If you encounter PII (names, \
+emails, CPF/SSN, phones, cards, tokens): confirm access with the SMALLEST possible sample and REDACT it in the \
+report (e.g. show 1 masked record + a count) — never dump, store, or transmit the dataset. Prefer benign markers \
+and OOB/echo checks over any state-changing payload. When unsure whether an action is safe, don't do it — report \
+it as reachable and stop.\n\n";
+const VOTE_SYS: &str = "You are an adversarial security validator. Decide if the candidate finding is a REAL, reproducible, exploitable vulnerability whose EVIDENCE actually proves impact. Reject common false positives: input merely reflected but not executed; version/banner guesses with no working PoC; self-XSS; theoretical issues; an error message or stack trace mistaken for injection; missing, generic, or non-reproducible evidence; severity inflated beyond what the evidence demonstrates. Confirm only if the provided evidence (request/response) concretely proves the vulnerability. Reply with JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}. Default to rejected when uncertain.";
+/// Adversarial second pass for High/Critical findings: assume false positive
+/// until the evidence forces otherwise. A finding that can't withstand the
+/// skeptics is dropped.
+const REFUTE_SYS: &str = "You are a skeptical senior reviewer trying to DISPROVE a reported vulnerability. Assume it is a FALSE POSITIVE unless the evidence forces otherwise. Scrutinize: does the evidence PROVE execution/impact, or only that input was reflected/accepted? Is there a real working PoC, or just a version/banner/theory? Could it be self-XSS, an error message, or an unreachable path? Reply JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"} where confirmed means the vulnerability is REAL and proven by the evidence. When in doubt, reject.";
 const CODE_VOTE_SYS: &str = "You are an adversarial source-code reviewer. Decide if the reported issue is a REAL vulnerability in the provided code (reachable, exploitable, not a false positive). Reply JSON {\"verdict\":\"confirmed\"|\"rejected\",\"reason\":\"...\"}.";
 
 /// ReAct loop directive: make the agent reason → act with a tool → observe →
@@ -178,13 +280,13 @@ pub async fn run(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<Str
                 let user = format!(
                     "AUTHORIZED engagement — you have explicit permission to test {target}. \
                      Do not ask for confirmation — proceed and PROVE each issue.\n\n\
-                     {directives}{react}{depth}{doctrine}{body}\n\nWhen done, reply with ONLY a JSON array of confirmed findings (may be empty []). \
+                     {directives}{react}{depth}{safety}{doctrine}{body}\n\nWhen done, reply with ONLY a JSON array of confirmed findings (may be empty []). \
                      Each item: {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}. \
                      `evidence` must contain the concrete proof (request/response excerpt).",
                     target = target,
                     directives = directives,
                     react = REACT_DOCTRINE,
-                    depth = DEPTH_DOCTRINE,
+                    depth = DEPTH_DOCTRINE, safety = SAFETY_DOCTRINE,
                     doctrine = tool_doctrine(mcp_on),
                     body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
                 );
@@ -217,14 +319,11 @@ pub async fn run(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sender<Str
     // ---- 4. Validate by N-model voting ---------------------------------
     let mut findings = validate(candidates, pool, VOTE_SYS, cfg.vote_n, &tx).await;
 
-    // ---- 5. Chain confirmed findings into deeper impact ----------------
-    let chained = chain_round(pool, &cfg.target, &recon, &operator_directives(&cfg), &findings, &lib.chains, &tx).await;
-    if !chained.is_empty() {
-        let extra = validate(dedup_findings(chained), pool, VOTE_SYS, cfg.vote_n, &tx).await;
-        let _ = tx.send(format!("chaining added {} validated finding(s)", extra.len())).await;
-        findings.extend(extra);
-        findings = dedup_findings(findings);
-    }
+    // ---- 5. Attack chaining: multi-round post-exploitation pivots ------
+    let chained = attack_chain(pool, &cfg, &recon, &findings, &lib.chains, &tx).await;
+    findings.extend(chained);
+    findings = dedup_findings(findings);
+    let findings = refute_pass(findings, pool, cfg.vote_n, &tx).await;
     finish(cfg, lib, recon, transcript, findings, selected, &mut rl, tx).await
 }
 
@@ -286,6 +385,7 @@ pub async fn run_whitebox(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: S
     let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
     let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating", candidates.len())).await;
     let findings = validate(candidates, pool, CODE_VOTE_SYS, cfg.vote_n, &tx).await;
+    let findings = refute_pass(findings, pool, cfg.vote_n, &tx).await;
     finish(cfg, lib, "{}".into(), transcript, findings, selected, &mut rl, tx).await
 }
 
@@ -398,11 +498,11 @@ pub async fn run_greybox(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Se
                 }
                 let user = format!(
                     "AUTHORIZED greybox engagement on {target} — you also have the source review below. \
-                     Proceed and PROVE each issue against the LIVE app.\n\n{directives}{leads}{react}{depth}{doctrine}{body}\n\n\
+                     Proceed and PROVE each issue against the LIVE app.\n\n{directives}{leads}{react}{depth}{safety}{doctrine}{body}\n\n\
                      Reply ONLY a JSON array of confirmed findings (may be []): \
                      {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}.",
                     target = target, directives = directives, leads = leads,
-                    react = REACT_DOCTRINE, depth = DEPTH_DOCTRINE, doctrine = tool_doctrine(mcp_on),
+                    react = REACT_DOCTRINE, depth = DEPTH_DOCTRINE, safety = SAFETY_DOCTRINE, doctrine = tool_doctrine(mcp_on),
                     body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
                 );
                 match pool.complete_routed(Task::Exploit, &ag.name, &ag.system, &user).await {
@@ -421,50 +521,172 @@ pub async fn run_greybox(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Se
     let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
     let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating", candidates.len())).await;
     let mut findings = validate(candidates, pool, VOTE_SYS, cfg.vote_n, &tx).await;
-    let chained = chain_round(pool, &cfg.target, &recon, &operator_directives(&cfg), &findings, &lib.chains, &tx).await;
-    if !chained.is_empty() {
-        let extra = validate(dedup_findings(chained), pool, VOTE_SYS, cfg.vote_n, &tx).await;
-        let _ = tx.send(format!("chaining added {} validated finding(s)", extra.len())).await;
-        findings.extend(extra);
-        findings = dedup_findings(findings);
-    }
+    let chained = attack_chain(pool, &cfg, &recon, &findings, &lib.chains, &tx).await;
+    findings.extend(chained);
+    findings = dedup_findings(findings);
+    let findings = refute_pass(findings, pool, cfg.vote_n, &tx).await;
     finish(cfg, lib, recon, transcript, findings, selected, &mut rl, tx).await
 }
 
-const CHAIN_SYS: &str = "You are an exploit-chaining specialist. Given already-CONFIRMED findings, chain them into deeper impact — e.g. SSRF→cloud metadata creds, SQLi→DB dump→credential reuse, IDOR→account takeover, arbitrary file read→secrets→RCE, auth bypass→admin. Use your tools to actually carry the chain forward and PROVE the escalated impact. Report ONLY NEW findings beyond the inputs.";
+const CHAIN_SYS: &str = "You are a post-exploitation & attack-chaining specialist. You are given ONE confirmed foothold plus any loot already gathered. DECIDE the most promising directions to expand from THIS foothold and pursue them with real tools: post-exploitation (loot credentials/tokens/keys/config/source), credential reuse, privilege escalation (horizontal AND vertical), lateral movement to adjacent services/hosts, data exfiltration, and reaching NEW attack surface the foothold exposes (e.g. SSRF→cloud metadata creds→IAM, SQLi→DB dump→credential reuse→admin, arbitrary file read→secrets→RCE, IDOR→account takeover, auth bypass→internal APIs). PROVE each escalated step with a real tool receipt. Report ONLY NEW findings beyond the input, plus any new loot you discovered (creds, tokens, hosts, internal endpoints) so later stages can reuse it. Authorized engagement; never destructive/DoS.";
 
 /// One orchestration round: take the confirmed findings and try to chain them
 /// into higher-impact follow-ups, reusing the recon/auth context. Returns the
 /// (unvalidated) new candidate findings produced by chaining.
-async fn chain_round(pool: &ModelPool, target: &str, recon: &str, directives: &str,
-                     confirmed: &[Finding], chains: &[Agent], tx: &Sender<String>) -> Vec<Finding> {
-    if confirmed.is_empty() {
+/// Dedup / identity key for a finding (cwe|endpoint|title-prefix).
+fn finding_key(f: &Finding) -> String {
+    format!("{}|{}|{}", f.cwe.to_lowercase(), f.endpoint.to_lowercase(),
+        f.title.to_lowercase().chars().take(40).collect::<String>())
+}
+
+fn sev_rank(sev: &str) -> u8 {
+    match sev.to_lowercase().as_str() {
+        x if x.starts_with("crit") => 4,
+        x if x.starts_with("high") => 3,
+        x if x.starts_with("med") => 2,
+        x if x.starts_with("low") => 1,
+        _ => 0,
+    }
+}
+
+/// Max footholds expanded per round (keeps token cost bounded).
+const CHAIN_SEEDS_PER_ROUND: usize = 6;
+
+/// Robust attack-chaining engine (v3.5.4): iterative, decision-driven,
+/// post-exploitation pivoting. Each round takes the newest confirmed footholds,
+/// and for EACH one an agent decides which directions to expand (post-ex, cred
+/// reuse, privesc, lateral, exfil, new surface), proves new impact, and reports
+/// new findings + **loot** (creds/tokens/hosts/endpoints). Loot is carried
+/// forward so later rounds reuse it. New validated findings become the next
+/// round's footholds; the loop stops at `chain_depth` rounds or when a round
+/// yields nothing new (loop-until-dry). Findings are validated each round so we
+/// never pivot off a false positive.
+async fn attack_chain(pool: &ModelPool, cfg: &RunConfig, recon: &str,
+                      confirmed: &[Finding], chains: &[Agent], tx: &Sender<String>) -> Vec<Finding> {
+    let max_rounds = cfg.chain_depth;
+    if max_rounds == 0 || confirmed.is_empty() || pool.stop_exploiting() {
         return vec![];
     }
-    let summary: String = confirmed.iter().take(20)
-        .map(|f| format!("- [{}] {} @ {} ({})", f.severity, f.title, f.endpoint, f.cwe))
-        .collect::<Vec<_>>().join("\n");
-    // Offer the known chain recipes as a menu so the LLM applies proven multi-stage paths.
     let recipes: String = chains.iter().map(|a| format!("- {}", a.title.replace(" Agent", ""))).collect::<Vec<_>>().join("\n");
     let recipe_block = if recipes.is_empty() { String::new() } else { format!("KNOWN CHAIN RECIPES (apply any that fit):\n{recipes}\n\n") };
-    let _ = tx.send(format!("chaining {} confirmed finding(s) for deeper impact…", confirmed.len())).await;
-    let recon_ctx: String = recon.chars().take(2500).collect();
-    let user = format!(
-        "AUTHORIZED engagement on {target}.\n\n{directives}{react}{depth}{doctrine}{recipe_block}\
-         CONFIRMED FINDINGS TO CHAIN:\n{summary}\n\nRecon:\n{recon_ctx}\n\n\
-         Chain these into deeper impact (e.g. SQLi→RCE→LPE, SSRF→cloud creds, upload→LFI→RCE) and PROVE each stage. \
-         Reply ONLY a JSON array of NEW findings \
-         (may be []): {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}.",
-        react = REACT_DOCTRINE, depth = DEPTH_DOCTRINE, doctrine = tool_doctrine(pool.mcp_config.is_some()),
-    );
-    match pool.complete_routed(Task::Exploit, "chain", CHAIN_SYS, &user).await {
-        Ok((m, text)) => {
-            let f = extract_findings(&text, "chain");
-            let _ = tx.send(format!("chain via {} → {} new candidate(s)", m.label(), f.len())).await;
-            f
+    let recon_ctx: String = recon.chars().take(2000).collect();
+    let directives = operator_directives(cfg);
+
+    let mut all_new: Vec<Finding> = Vec::new();
+    let mut loot: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = confirmed.iter().map(finding_key).collect();
+
+    // Frontier = footholds to expand this round; start with confirmed, best-first.
+    let mut frontier: Vec<Finding> = confirmed.to_vec();
+    frontier.sort_by(|a, b| sev_rank(&b.severity).cmp(&sev_rank(&a.severity)));
+
+    for round in 1..=max_rounds {
+        if pool.stop_exploiting() || frontier.is_empty() {
+            break;
         }
-        Err(e) => { let _ = tx.send(format!("chaining failed: {e}")).await; vec![] }
+        let seeds: Vec<Finding> = frontier.iter().take(CHAIN_SEEDS_PER_ROUND).cloned().collect();
+        let _ = tx.send(format!("⛓ attack-chain round {round}/{max_rounds} — expanding {} foothold(s), {} loot item(s)", seeds.len(), loot.len())).await;
+
+        let loot_snapshot = loot.clone();
+        let results: Vec<(Vec<Finding>, Vec<String>)> = stream::iter(seeds.into_iter())
+            .map(|seed| {
+                let (dir, rc, rb, ls, txc) = (directives.clone(), recon_ctx.clone(), recipe_block.clone(), loot_snapshot.clone(), tx.clone());
+                async move { chain_from_seed(pool, &cfg.target, &dir, &rc, &rb, &seed, &ls, round, max_rounds, &txc).await }
+            })
+            .buffer_unordered(4)
+            .collect()
+            .await;
+
+        // Merge round output: accumulate loot, gather candidate findings.
+        let mut round_cands: Vec<Finding> = Vec::new();
+        for (fs, lt) in results {
+            for l in lt {
+                if !loot.iter().any(|x| x.eq_ignore_ascii_case(&l)) { loot.push(l); }
+            }
+            round_cands.extend(fs);
+        }
+        // Keep only genuinely NEW findings (unseen key).
+        let fresh: Vec<Finding> = dedup_findings(round_cands)
+            .into_iter()
+            .filter(|f| seen.insert(finding_key(f)))
+            .collect();
+        if fresh.is_empty() {
+            let _ = tx.send("⛓ no new paths this round — chain exhausted".into()).await;
+            break;
+        }
+        // Validate before pivoting further (don't chain off false positives).
+        let validated = validate(fresh, pool, VOTE_SYS, cfg.vote_n, tx).await;
+        let _ = tx.send(format!("⛓ round {round}: +{} validated finding(s), {} loot item(s) total", validated.len(), loot.len())).await;
+        if validated.is_empty() {
+            break;
+        }
+        all_new.extend(validated.clone());
+        // Next round expands the freshly-validated footholds, best-first.
+        frontier = validated;
+        frontier.sort_by(|a, b| sev_rank(&b.severity).cmp(&sev_rank(&a.severity)));
     }
+    if !all_new.is_empty() {
+        let _ = tx.send(format!("⛓ attack-chaining added {} finding(s) across pivots", all_new.len())).await;
+    }
+    all_new
+}
+
+/// Expand ONE foothold: the agent decides directions, does post-exploitation and
+/// pivots, and returns new findings + discovered loot.
+async fn chain_from_seed(pool: &ModelPool, target: &str, directives: &str, recon_ctx: &str,
+                         recipe_block: &str, seed: &Finding, loot: &[String],
+                         round: usize, max: usize, tx: &Sender<String>) -> (Vec<Finding>, Vec<String>) {
+    if pool.stop_exploiting() {
+        return (vec![], vec![]);
+    }
+    let loot_block = if loot.is_empty() {
+        "(none yet)".to_string()
+    } else {
+        loot.iter().take(30).map(|l| format!("- {l}")).collect::<Vec<_>>().join("\n")
+    };
+    let short: String = seed.title.chars().take(28).collect();
+    let user = format!(
+        "AUTHORIZED engagement on {target}.\n\n{directives}{react}{depth}{safety}{doctrine}\
+         FOOTHOLD TO EXPAND (round {round}/{max}):\n- [{}] {} @ {} ({})\n  payload: {}\n  evidence: {}\n\n\
+         LOOT GATHERED (reuse it):\n{loot_block}\n\n{recipe_block}RECON:\n{recon_ctx}\n\n\
+         From THIS foothold, DECIDE the best directions and PROVE new impact — post-exploitation (loot creds/keys/config/source), credential reuse, privilege escalation (horizontal & vertical), lateral movement to adjacent services/hosts, data exfiltration, and NEW attack surface it exposes. Every claim needs a real tool receipt.\n\n\
+         Reply ONLY JSON: {{\"findings\":[{{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}],\"loot\":[\"cred:user:pass@host\",\"token:...\",\"host:10.0.0.5\",\"endpoint:/internal/api\"]}} (empty arrays are fine).",
+        seed.severity, seed.title, seed.endpoint, seed.cwe, seed.payload, seed.evidence,
+        react = REACT_DOCTRINE, depth = DEPTH_DOCTRINE, safety = SAFETY_DOCTRINE, doctrine = tool_doctrine(pool.mcp_config.is_some()),
+    );
+    let label = format!("chain:{short}");
+    match pool.complete_routed(Task::Exploit, &label, CHAIN_SYS, &user).await {
+        Ok((m, text)) => {
+            let (f, lt) = extract_chain(&text, "chain");
+            if !f.is_empty() || !lt.is_empty() {
+                let _ = tx.send(format!("chain[{short}] via {} → {} new finding(s), {} loot", m.label(), f.len(), lt.len())).await;
+            }
+            (f, lt)
+        }
+        Err(e) => {
+            let _ = tx.send(format!("chain[{short}] failed: {e}")).await;
+            (vec![], vec![])
+        }
+    }
+}
+
+/// Parse a chain agent reply into (new findings, loot). Accepts the object form
+/// `{"findings":[...],"loot":[...]}` and falls back to a bare findings array.
+fn extract_chain(text: &str, agent: &str) -> (Vec<Finding>, Vec<String>) {
+    if let (Some(a), Some(b)) = (text.find('{'), text.rfind('}')) {
+        if b > a {
+            if let Ok(serde_json::Value::Object(o)) = serde_json::from_str::<serde_json::Value>(&text[a..=b]) {
+                if o.contains_key("findings") {
+                    let findings = o.get("findings").map(|v| extract_findings(&v.to_string(), agent)).unwrap_or_default();
+                    let loot = o.get("loot").and_then(|v| v.as_array())
+                        .map(|arr| arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect())
+                        .unwrap_or_default();
+                    return (findings, loot);
+                }
+            }
+        }
+    }
+    (extract_findings(text, agent), vec![])
 }
 
 // --------------------------------------------------------------------------- shared
@@ -603,11 +825,11 @@ async fn validate(candidates: Vec<Finding>, pool: &ModelPool, sys: &str, vote_n:
             let finder = finder.clone();
             async move {
                 let q = format!(
-                    "Finding: {} | severity {} | {} | at {} | payload {} | evidence {}",
-                    f.title, f.severity, f.cwe, f.endpoint, f.payload, f.evidence
+                    "Finding: {} | severity {} | {} | at {} | payload {} | evidence {} | impact {}",
+                    f.title, f.severity, f.cwe, f.endpoint, f.payload, f.evidence, f.impact
                 );
                 let (yes, total) = pool.vote(sys, &q, vote_n, finder.as_deref()).await;
-                f.validated = total > 0 && yes * 2 >= total;
+                f.validated = crate::pool::quorum_confirmed(&f.severity, yes, total);
                 f.votes = format!("{yes}/{total}");
                 if f.confidence == 0.0 && total > 0 {
                     f.confidence = yes as f64 / total as f64;
@@ -620,6 +842,37 @@ async fn validate(candidates: Vec<Finding>, pool: &ModelPool, sys: &str, vote_n:
         .collect()
         .await;
     validated.into_iter().filter(|f| f.validated).collect()
+}
+
+/// Adversarial refutation pass: every confirmed **High/Critical** finding is
+/// re-examined by a skeptical panel that tries to prove it's a false positive.
+/// A finding that fails to withstand a majority of skeptics is dropped. Lower
+/// severities pass through unchanged. Runs only when a real panel exists.
+async fn refute_pass(findings: Vec<Finding>, pool: &ModelPool, vote_n: usize, tx: &Sender<String>) -> Vec<Finding> {
+    let finder = pool.candidates.first().map(|m| m.label());
+    let mut kept = Vec::new();
+    for mut f in findings {
+        let s = f.severity.to_lowercase();
+        let high = s.starts_with("crit") || s.starts_with("high");
+        if !high || pool.stop_exploiting() {
+            kept.push(f);
+            continue;
+        }
+        let q = format!(
+            "Finding: {} | severity {} | {} | at {} | payload {} | evidence {} | impact {}",
+            f.title, f.severity, f.cwe, f.endpoint, f.payload, f.evidence, f.impact
+        );
+        let (yes, total) = pool.vote(REFUTE_SYS, &q, vote_n.max(2), finder.as_deref()).await;
+        // Survive on no-response (infra failure) or a surviving majority.
+        let survives = total == 0 || yes * 2 > total;
+        if survives {
+            if total > 0 { f.votes = format!("{} · refute {yes}/{total}", f.votes); }
+            kept.push(f);
+        } else {
+            let _ = tx.send(format!("vote {} → dropped by adversarial refute ({yes}/{total})", f.title)).await;
+        }
+    }
+    kept
 }
 
 async fn finish(cfg: RunConfig, _lib: &Library, recon: String, transcript: String, mut findings: Vec<Finding>,
@@ -660,6 +913,8 @@ async fn finish(cfg: RunConfig, _lib: &Library, recon: String, transcript: Strin
     }
 
     let _ = tx.send(format!("{} validated finding(s)", findings.len())).await;
+    // Attribution: stamp provenance into each finding (report + json + copies).
+    stamp_attribution(&mut findings);
     // Map findings to OWASP / MITRE / kill-chain stage for the attack graph.
     crate::attack_graph::enrich(&mut findings);
 
@@ -839,13 +1094,7 @@ fn conf(v: Option<&serde_json::Value>) -> f64 {
 fn dedup_findings(mut v: Vec<Finding>) -> Vec<Finding> {
     v.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
     let mut seen = std::collections::HashSet::new();
-    v.into_iter()
-        .filter(|f| {
-            let key = format!("{}|{}|{}", f.cwe.to_lowercase(), f.endpoint.to_lowercase(),
-                f.title.to_lowercase().chars().take(40).collect::<String>());
-            seen.insert(key)
-        })
-        .collect()
+    v.into_iter().filter(|f| seen.insert(finding_key(f))).collect()
 }
 
 fn norm_sev(s: &str) -> String {
@@ -962,8 +1211,8 @@ pub async fn run_host(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sende
                     let _ = txc.send(format!("  ▶ launching agent: {} ({})", ag.name, ag.title.replace(" Agent", ""))).await;
                 }
                 let user = format!(
-                    "AUTHORIZED host engagement on {target}. Proceed and PROVE each issue with raw tool output.\n\n{directives}{tooling}{react}{body}\n\nReply ONLY a JSON array of confirmed findings (may be []): {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}.",
-                    target = target, directives = directives, tooling = HOST_TOOLING, react = REACT_DOCTRINE,
+                    "AUTHORIZED host engagement on {target}. Proceed and PROVE each issue with raw tool output.\n\n{directives}{tooling}{react}{safety}{body}\n\nReply ONLY a JSON array of confirmed findings (may be []): {{id,title,severity,cwe,endpoint,payload,evidence,impact,remediation,confidence}}.",
+                    target = target, directives = directives, tooling = HOST_TOOLING, react = REACT_DOCTRINE, safety = SAFETY_DOCTRINE,
                     body = ag.user.replace("{target}", &target).replace("{recon_json}", &recon),
                 );
                 match pool.complete_routed(Task::Exploit, &ag.name, &ag.system, &user).await {
@@ -988,11 +1237,9 @@ pub async fn run_host(cfg: RunConfig, lib: &Library, pool: &ModelPool, tx: Sende
     let candidates = dedup_findings(raw.iter().flat_map(|(_, _, f)| f.clone()).collect());
     let _ = tx.send(format!("{} candidate finding(s) (deduped) — validating", candidates.len())).await;
     let mut findings = validate(candidates, pool, VOTE_SYS, cfg.vote_n, &tx).await;
-    let chained = chain_round(pool, &cfg.target, &recon, &operator_directives(&cfg), &findings, &lib.chains, &tx).await;
-    if !chained.is_empty() {
-        let extra = validate(dedup_findings(chained), pool, VOTE_SYS, cfg.vote_n, &tx).await;
-        findings.extend(extra);
-        findings = dedup_findings(findings);
-    }
+    let chained = attack_chain(pool, &cfg, &recon, &findings, &lib.chains, &tx).await;
+    findings.extend(chained);
+    findings = dedup_findings(findings);
+    let findings = refute_pass(findings, pool, cfg.vote_n, &tx).await;
     finish(cfg, lib, recon, transcript, findings, selected, &mut rl, tx).await
 }
