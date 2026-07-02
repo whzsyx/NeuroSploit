@@ -120,7 +120,7 @@ const COMMANDS: &[&str] = &[
     "/help", "/show", "/config", "/providers", "/model", "/key", "/sub", "/target",
     "/repo", "/auth", "/creds", "/focus", "/attach", "/context", "/mcp", "/offline",
     "/votes", "/chain", "/timeout", "/proxy", "/burp", "/agents", "/theme", "/clear", "/run", "/stop", "/continue", "/runs", "/results", "/report",
-    "/status", "/diff", "/retest", "/integrations", "/quit",
+    "/status", "/diff", "/retest", "/finding", "/expand", "/integrations", "/quit",
 ];
 
 /// rustyline helper: Tab-completes `/commands` and `@filesystem-paths`,
@@ -1276,12 +1276,13 @@ fn help() {
 
     println!("\n  \x1b[2mTARGET & SCOPE\x1b[0m");
     h("/target <url[,..]>", "black-box target URL (comma-separated = multi-target, sequential)");
-    h("/repo <path>",       "analyse a repo (repo + target = greybox: code + live)");
+    h("/repo <path|url>",   "analyse a repo — path or GitHub URL (repo + target = greybox)");
     h("/auth <value>",      "auth header, e.g. 'Authorization: Bearer <jwt>' (no arg = show)");
-    h("/creds <file.yaml>", "credentials: jwt/header/cookie/login + ssh/windows");
+    h("/creds <file.yaml>", "credentials: jwt/header/cookie/login + ssh/windows + aws/gcp/azure");
     h("/focus <text>",      "steer the tests (or just type the instruction)");
     h("@path @dir @f:1-20", "attach a file/folder/line-range to context (Tab → menu)");
-    h("/attach /context",   "attach a path · list attachments");
+    h("/attach <path>",     "attach a file/folder to context");
+    h("/context",           "list current attachments");
 
     println!("\n  \x1b[2mMODELS & AUTH\x1b[0m");
     h("/model [a:b,..]",    "set models (no arg → arrow-key multi-select)");
@@ -1291,22 +1292,31 @@ fn help() {
 
     println!("\n  \x1b[2mRUN & MONITOR\x1b[0m");
     h("/run",               "launch (runs in the BACKGROUND — keep typing)");
-    h("/status",            "live progress + findings while running (or a past run #)");
+    h("/status [n]",        "live progress + findings while running (or a past run #)");
     h("/stop",              "stop: [1] validate+report  [2] raw report now  [3] discard");
     h("/continue",          "resume a run paused on token/quota (change /model first to switch)");
-    h("/runs",              "list runs · /results [n] · /report [n]");
-    h("/diff /retest [n]",  "what changed vs last run · re-verify a past run");
+    h("/results [n]",       "browse findings (target → vuln → detail; Esc = back)");
+    h("/finding [n]",       "pick a finding and see its command + PoC + evidence");
+    h("/report [n]",        "open a run's report (menu if several)");
+    h("/runs",              "list all runs");
+    h("/diff",              "what changed vs the last run");
+    h("/retest [n]",        "re-verify a past run's findings");
 
     println!("\n  \x1b[2mINTEGRATIONS\x1b[0m");
     h("/integrations",      "show · enable/disable github|gitlab|jira · setup <name>");
 
     println!("\n  \x1b[2mOPTIONS\x1b[0m");
-    h("/mcp on|off",        "Playwright MCP browser    /offline on|off  self-test");
-    h("/votes <n>",         "validator votes           /chain <n>   attack-chain depth");
+    h("/mcp on|off",        "Playwright MCP browser (prove client-side issues)");
+    h("/offline on|off",    "pipeline self-test (no API keys / no model calls)");
+    h("/votes <n>",         "number of validator votes per finding");
+    h("/chain <n>",         "attack-chain depth (post-exploitation pivots; 0 = off)");
     h("/timeout <min>",     "idle guardrail: stop if no new finding in <min> (0 = off)");
-    h("/proxy <url>|off",    "route agent HTTP through Burp/ZAP (/burp = default :8080)");
-    h("/agents <n>|list",   "cap agents · list counts  /theme color|mono");
-    h("/show (config)",     "/clear                    /quit");
+    h("/proxy <url>|off",   "route agent HTTP through Burp/ZAP  (/burp = default :8080)");
+    h("/agents <n>|list",   "cap agents to run · `list` shows library counts");
+    h("/theme color|mono",  "toggle colored output");
+    h("/show",              "show the current session config");
+    h("/clear",             "clear the screen");
+    h("/quit",              "save session and exit");
 
     println!("\n  \x1b[2mMODES — black-box: set /target · white-box: set /repo · grey-box: set BOTH /repo + /target · host: /target <ip> + /creds\x1b[0m");
     println!("  \x1b[2mFindings are checkpointed live to .neurosploit/ — quit/crash mid-run and they're recovered into /runs next launch.\x1b[0m");
